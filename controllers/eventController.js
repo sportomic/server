@@ -9,25 +9,24 @@ exports.getAllEvents = async (req, res) => {
     const { sport } = req.query;
     let filter = {};
 
-    // If sport query parameter exists and is not 'all', add it to filter
     if (sport && sport.toLowerCase() !== "all") {
       filter.sportsName = sport.toLowerCase();
     }
 
     const events = await Event.find(filter);
-    // console.log(events);
-
-    // Get unique sports names for reference
     const allSports = await Event.distinct("sportsName");
 
-    const response = {
+    const eventsWithSlots = events.map((event) => ({
+      ...event._doc,
+      slotsLeft: event.participantsLimit - event.currentParticipants,
+    }));
+
+    res.status(200).json({
       total: events.length,
       sport: sport || "all",
-      availableSports: allSports, // This will give you a list of all sports in the system
-      events: events,
-    };
-
-    res.status(200).json(response);
+      availableSports: allSports,
+      events: eventsWithSlots,
+    });
   } catch (error) {
     console.error("Error in getAllEvents:", error);
     res.status(500).json({ error: "Failed to fetch events" });
@@ -184,12 +183,18 @@ exports.confirmPayment = async (req, res) => {
     );
 
     if (isValid) {
+      // Push participant and increment the counter atomically
       event.participants.push({
         name: participantName,
         phone: participantPhone,
         paymentStatus: "success",
       });
+
+      // Update currentParticipants
+      event.currentParticipants += 1;
+
       await event.save();
+
       return res.status(200).json({ message: "Payment confirmed" });
     } else {
       return res.status(400).json({ error: "Payment verification failed" });
