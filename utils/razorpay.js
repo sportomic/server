@@ -6,12 +6,22 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-exports.createRazorpayOrder = async (amount) => {
-  return await razorpay.orders.create({
+exports.createRazorpayOrder = async (amount, eventDetails, userDetails) => {
+  const orderOptions = {
     amount: amount * 100, // Convert to paise
     currency: "INR",
     receipt: `receipt_${Date.now()}`,
-  });
+    notes: {
+      event_name: eventDetails.name,
+      event_date: eventDetails.date,
+      event_time: eventDetails.slot,
+      event_venue: eventDetails.venueName,
+      customer_name: userDetails.name,
+      customer_phone: userDetails.phone,
+    },
+  };
+
+  return await razorpay.orders.create(orderOptions);
 };
 
 exports.verifyRazorpayPayment = (
