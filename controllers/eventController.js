@@ -146,16 +146,48 @@ exports.initiateBooking = async (req, res) => {
     const event = await Event.findById(id);
     if (!event) return res.status(404).json({ error: "Event not found" });
 
-    const order = await createRazorpayOrder(event.price);
+    // Check if slots are available
+    if (event.currentParticipants >= event.participantsLimit) {
+      return res.status(400).json({ error: "Event is fully booked" });
+    }
+
+    const userDetails = {
+      name,
+      phone,
+    };
+
+    const eventDetails = {
+      name: event.name,
+      date: event.date,
+      venueName: event.venueName,
+      slot: event.slot,
+    };
+
+    const order = await createRazorpayOrder(
+      event.price,
+      eventDetails,
+      userDetails
+    );
+
+    // Prepare the response with all necessary details for the frontend
     res.status(200).json({
       message: "Booking initiated",
       orderId: order.id,
       amount: order.amount,
       eventName: event.name,
+      eventDate: event.date,
+      eventTime: new Date(event.date).toLocaleTimeString(),
+      venue: event.venueName,
+      customerName: name,
+      customerPhone: phone,
+      // Include any prefill options for Razorpay
+      prefill: {
+        name: name,
+        contact: phone,
+      },
     });
   } catch (error) {
     console.error("Booking Initiation Error:", error);
-    console.error(error);
     res
       .status(500)
       .json({ error: "Failed to initiate booking", details: error.message });
@@ -176,6 +208,7 @@ exports.confirmPayment = async (req, res) => {
     const event = await Event.findById(id);
     if (!event) return res.status(404).json({ error: "Event not found" });
 
+    // Verify payment signature
     const isValid = verifyRazorpayPayment(
       razorpayOrderId,
       paymentId,
@@ -183,24 +216,45 @@ exports.confirmPayment = async (req, res) => {
     );
 
     if (isValid) {
-      // Push participant and increment the counter atomically
-      event.participants.push({
+      // Check again if slots are available
+      if (event.currentParticipants >= event.participantsLimit) {
+        return res.status(400).json({ error: "Event is fully booked" });
+      }
+
+      // Create participant object with more details
+      const participant = {
         name: participantName,
         phone: participantPhone,
         paymentStatus: "success",
-      });
+        paymentId: paymentId,
+        orderId: razorpayOrderId,
+        bookingDate: new Date(),
+        amount: event.price,
+      };
 
-      // Update currentParticipants
+      // Push participant and increment the counter atomically
+      event.participants.push(participant);
       event.currentParticipants += 1;
 
       await event.save();
 
-      return res.status(200).json({ message: "Payment confirmed" });
+      return res.status(200).json({
+        message: "Payment confirmed",
+        bookingDetails: {
+          eventName: event.name,
+          eventDate: event.date,
+          participantName,
+          participantPhone,
+          paymentId,
+          orderId: razorpayOrderId,
+          amount: event.price,
+        },
+      });
     } else {
       return res.status(400).json({ error: "Payment verification failed" });
     }
   } catch (error) {
-    console.error(error);
+    console.error("Payment Confirmation Error:", error);
     res.status(500).json({ error: "Failed to confirm payment" });
   }
 };
