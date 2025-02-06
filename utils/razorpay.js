@@ -18,6 +18,7 @@ exports.createRazorpayOrder = async (amount, eventDetails, userDetails) => {
       event_venue: eventDetails.venueName,
       customer_name: userDetails.name,
       customer_phone: userDetails.phone,
+      customer_skill: userDetails.skillLevel,
     },
   };
 
