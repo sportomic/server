@@ -134,12 +134,19 @@ exports.createEvent = async (req, res) => {
 
 exports.initiateBooking = async (req, res) => {
   const { id } = req.params;
-  const { name, phone } = req.body;
+  const { name, phone, skillLevel } = req.body;
 
-  if (!name || !phone) {
-    return res
-      .status(400)
-      .json({ error: "Name and phone number are required" });
+  if (!name || !phone || !skillLevel) {
+    return res.status(400).json({
+      error: "Name, phone number, and skill level are required",
+    });
+  }
+
+  // Validate skill level
+  if (!["beginner", "intermediate/advanced"].includes(skillLevel)) {
+    return res.status(400).json({
+      error: "Skill level must be either 'beginner' or 'intermediate'",
+    });
   }
 
   try {
@@ -154,6 +161,7 @@ exports.initiateBooking = async (req, res) => {
     const userDetails = {
       name,
       phone,
+      skillLevel,
     };
 
     const eventDetails = {
@@ -169,7 +177,6 @@ exports.initiateBooking = async (req, res) => {
       userDetails
     );
 
-    // Prepare the response with all necessary details for the frontend
     res.status(200).json({
       message: "Booking initiated",
       orderId: order.id,
@@ -180,7 +187,7 @@ exports.initiateBooking = async (req, res) => {
       venue: event.venueName,
       customerName: name,
       customerPhone: phone,
-      // Include any prefill options for Razorpay
+      skillLevel: skillLevel,
       prefill: {
         name: name,
         contact: phone,
@@ -188,9 +195,10 @@ exports.initiateBooking = async (req, res) => {
     });
   } catch (error) {
     console.error("Booking Initiation Error:", error);
-    res
-      .status(500)
-      .json({ error: "Failed to initiate booking", details: error.message });
+    res.status(500).json({
+      error: "Failed to initiate booking",
+      details: error.message,
+    });
   }
 };
 
@@ -202,6 +210,7 @@ exports.confirmPayment = async (req, res) => {
     razorpaySignature,
     participantName,
     participantPhone,
+    skillLevel,
   } = req.body;
 
   try {
@@ -216,15 +225,25 @@ exports.confirmPayment = async (req, res) => {
     );
 
     if (isValid) {
-      // Check again if slots are available
       if (event.currentParticipants >= event.participantsLimit) {
         return res.status(400).json({ error: "Event is fully booked" });
       }
 
-      // Create participant object with more details
+      // Validate skill level for new bookings
+      if (
+        !skillLevel ||
+        !["beginner", "intermediate/advanced"].includes(skillLevel)
+      ) {
+        return res.status(400).json({
+          error: "Valid skill level (beginner or intermediate) is required",
+        });
+      }
+
+      // Create participant object with skill level
       const participant = {
         name: participantName,
         phone: participantPhone,
+        skillLevel: skillLevel,
         paymentStatus: "success",
         paymentId: paymentId,
         orderId: razorpayOrderId,
@@ -232,11 +251,19 @@ exports.confirmPayment = async (req, res) => {
         amount: event.price,
       };
 
-      // Push participant and increment the counter atomically
-      event.participants.push(participant);
-      event.currentParticipants += 1;
+      // Use findOneAndUpdate to safely update the document
+      const updatedEvent = await Event.findOneAndUpdate(
+        { _id: id, currentParticipants: { $lt: event.participantsLimit } },
+        {
+          $push: { participants: participant },
+          $inc: { currentParticipants: 1 },
+        },
+        { new: true, runValidators: true } // Disable validation for this update
+      );
 
-      await event.save();
+      if (!updatedEvent) {
+        return res.status(400).json({ error: "Failed to update event" });
+      }
 
       return res.status(200).json({
         message: "Payment confirmed",
@@ -245,6 +272,7 @@ exports.confirmPayment = async (req, res) => {
           eventDate: event.date,
           participantName,
           participantPhone,
+          skillLevel,
           paymentId,
           orderId: razorpayOrderId,
           amount: event.price,

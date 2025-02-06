@@ -3,6 +3,12 @@ const mongoose = require("mongoose");
 const participantSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phone: { type: String, required: true },
+  skillLevel: {
+    type: String,
+    enum: ["beginner", "intermediate/advanced"],
+    // Make it not required in schema but handle requirement in controller
+    required: false,
+  },
   paymentStatus: {
     type: String,
     enum: ["pending", "success"],
@@ -16,7 +22,7 @@ const eventSchema = new mongoose.Schema({
   date: { type: Date, required: true },
   slot: { type: String, required: true },
   participantsLimit: { type: Number, required: true },
-  currentParticipants: { type: Number, default: 0 }, // Add this field
+  currentParticipants: { type: Number, default: 0 },
   participants: [participantSchema],
   price: { type: Number, required: true },
   sportsName: { type: String, required: true, lowercase: true },
