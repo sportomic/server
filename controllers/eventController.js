@@ -3,6 +3,59 @@ const {
   createRazorpayOrder,
   verifyRazorpayPayment,
 } = require("../utils/razorpay");
+const Excel = require("exceljs");
+
+exports.downloadEventExcel = async (req, res) => {
+  try {
+    const events = await Event.find();
+
+    const workbook = new Excel.Workbook();
+    const worksheet = workbook.addWorksheet("Events");
+
+    worksheet.addRow([
+      "Event ID",
+      "Event Name",
+      "Sport",
+      "Date",
+      "Time",
+      "Event Price",
+      "Participant Name",
+      "Participant Phone",
+    ]);
+
+    for (const event of events) {
+      for (const participant of event.participants) {
+        if (participant.paymentStatus === "success") {
+          worksheet.addRow([
+            event._id,
+            event.name,
+            event.sportsName,
+            event.date,
+            event.slot,
+            event.price,
+            participant.name,
+            participant.phone,
+          ]);
+        }
+      }
+    }
+
+    const fileName = `events_${new Date()
+      .toISOString()
+      .replace(/:/g, "-")
+      .replace(/\..+/, "")}.xlsx`;
+    res.setHeader("Content-Disposition", `attachment; filename=${fileName}`);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    await workbook.xlsx.write(res);
+    res.status(200).end();
+  } catch (error) {
+    console.error("Error in downloadEventExcel:", error);
+    res.status(500).json({ error: "Failed to generate Excel file" });
+  }
+};
 
 exports.getAllEvents = async (req, res) => {
   try {
