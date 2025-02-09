@@ -16,11 +16,14 @@ exports.downloadEventExcel = async (req, res) => {
       "Event ID",
       "Event Name",
       "Sport",
+      "Venue Name",
+      "Skill Level",
       "Date",
       "Time",
       "Event Price",
       "Participant Name",
       "Participant Phone",
+      "Participant Id",
     ]);
 
     for (const event of events) {
@@ -30,11 +33,14 @@ exports.downloadEventExcel = async (req, res) => {
             event._id,
             event.name,
             event.sportsName,
+            event.venueName,
+            participant.skillLevel,
             event.date,
             event.slot,
             event.price,
             participant.name,
             participant.phone,
+            participant.id,
           ]);
         }
       }
