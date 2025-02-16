@@ -13,8 +13,6 @@ const {
 } = require("../controllers/eventController");
 // const verifyAdmin = require("../middleware/verifyAdmin");
 
-// const { uploadEventsFromExcel } = require("../controllers/excelController");
-
 const upload = require("../middleware/uploadFile");
 
 router.post("/upload", upload.single("file"), uploadEventsFromExcel);
