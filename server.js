@@ -13,16 +13,17 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
+app.use(express.urlencoded({ extended: true }));
 
 // MongoDB Connection
 connectDB();
 
 // Routes
-const authRoutes = require("./routes/authRoutes");
+// const authRoutes = require("./routes/authRoutes");
 const eventRoutes = require("./routes/eventRoutes");
 
 // API Endpoints
-app.use("/api/auth", authRoutes); // Authentication routes
+// app.use("/api/auth", authRoutes); // Authentication routes
 app.use("/api/events", eventRoutes); // Event-related routes
 
 // Default Route

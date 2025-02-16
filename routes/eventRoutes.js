@@ -1,4 +1,5 @@
 const express = require("express");
+const router = express.Router();
 const {
   getAllEvents,
   getEventById,
@@ -7,11 +8,14 @@ const {
   initiateBooking,
   confirmPayment,
   downloadEventExcel,
+  addParticipantManually,
+  uploadEventsFromExcel,
 } = require("../controllers/eventController");
 // const verifyAdmin = require("../middleware/verifyAdmin");
 
-const router = express.Router();
+const upload = require("../middleware/uploadFile");
 
+router.post("/upload", upload.single("file"), uploadEventsFromExcel);
 router.get("/", getAllEvents);
 router.get("/excel", downloadEventExcel);
 router.get("/:id", getEventById);
@@ -19,5 +23,6 @@ router.get("/:id/successful-payments", getSuccessfulPayments);
 router.post("/add-event", createEvent);
 router.post("/:id/book", initiateBooking);
 router.post("/:id/confirm", confirmPayment);
+// router.post("/:id/participants/manual", addParticipantManually);
 
 module.exports = router;
