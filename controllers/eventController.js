@@ -26,6 +26,8 @@ exports.downloadEventExcel = async (req, res) => {
       "Participant Name",
       "Participant Phone",
       "Participant Id",
+      "Quantity",
+      "Total Amount",
     ]);
 
     for (const event of events) {
@@ -43,6 +45,8 @@ exports.downloadEventExcel = async (req, res) => {
             participant.name,
             participant.phone,
             participant.id,
+            participant.quantity,
+            participant.amount,
           ]);
         }
       }
@@ -93,6 +97,7 @@ exports.getAllEvents = async (req, res) => {
     res.status(500).json({ error: "Failed to fetch events" });
   }
 };
+
 exports.getEventById = async (req, res) => {
   const { id } = req.params;
   try {
@@ -106,32 +111,38 @@ exports.getEventById = async (req, res) => {
 };
 //get user based over successfull payment based on event id
 exports.getSuccessfulPayments = async (req, res) => {
-  const { id } = req.params; // Event ID
+  const { id } = req.params;
 
   try {
-    // Find the event by ID
     const event = await Event.findById(id);
 
     if (!event) {
       return res.status(404).json({ error: "Event not found" });
     }
 
-    // const totalSuccessfulPayments = event.participants.filter(
-    //   (participant) => participant.paymentStatus === "success"
-    // ).length;
-
-    // Filter participants with successful payment status
     const successfulPayments = event.participants.filter(
       (participant) => participant.paymentStatus === "success"
     );
 
-    // const slotsLeft = event.participantsLimit - totalSuccessfulPayments;
+    const totalBookedSlots = successfulPayments.reduce(
+      (acc, curr) => acc + curr.quantity,
+      0
+    );
+    const slotsLeft = event.participantsLimit - totalBookedSlots;
 
     res.status(200).json({
       eventName: event.name,
-      // slotsLeft,
+      slotsLeft,
+      totalBookedSlots,
       totalSuccessfulPayments: successfulPayments.length,
-      successfulPayments,
+      successfulPayments: successfulPayments.map((p) => ({
+        name: p.name,
+        phone: p.phone,
+        skillLevel: p.skillLevel,
+        quantity: p.quantity,
+        amount: p.amount,
+        paymentId: p.paymentId,
+      })),
     });
   } catch (error) {
     console.error(error);
@@ -153,7 +164,6 @@ exports.createEvent = async (req, res) => {
     sportsName,
   } = req.body;
 
-  // Check for required fields
   if (
     !name ||
     !description ||
@@ -161,15 +171,14 @@ exports.createEvent = async (req, res) => {
     !slot ||
     !participantsLimit ||
     !price ||
-    !venueName || // Venue name is required
-    !location || // Location is required
-    !sportsName // Sports name is required
+    !venueName ||
+    !location ||
+    !sportsName
   ) {
     return res.status(400).send("Please provide all required fields");
   }
 
   try {
-    // Create a new event
     const event = new Event({
       name,
       description,
@@ -178,14 +187,12 @@ exports.createEvent = async (req, res) => {
       participantsLimit,
       price,
       venueName,
-      venueImage, // Include the optional venue image
-      location, // Include location field
-      sportsName, // Include sports name field
+      venueImage,
+      location,
+      sportsName,
     });
 
-    // Save the event to the database
     await event.save();
-
     res.status(201).json({ message: "Event Created Successfully", event });
   } catch (error) {
     console.error(error);
@@ -195,7 +202,7 @@ exports.createEvent = async (req, res) => {
 
 exports.initiateBooking = async (req, res) => {
   const { id } = req.params;
-  const { name, phone, skillLevel } = req.body;
+  const { name, phone, skillLevel, quantity = 1 } = req.body;
 
   if (!name || !phone || !skillLevel) {
     return res.status(400).json({
@@ -203,27 +210,22 @@ exports.initiateBooking = async (req, res) => {
     });
   }
 
-  // Validate skill level
-  if (!["beginner", "intermediate/advanced"].includes(skillLevel)) {
-    return res.status(400).json({
-      error: "Skill level must be either 'beginner' or 'intermediate'",
-    });
+  if (typeof quantity !== "number" || quantity < 1) {
+    return res.status(400).json({ error: "Invalid quantity" });
   }
 
   try {
     const event = await Event.findById(id);
     if (!event) return res.status(404).json({ error: "Event not found" });
 
-    // Check if slots are available
-    if (event.currentParticipants >= event.participantsLimit) {
-      return res.status(400).json({ error: "Event is fully booked" });
+    const availableSlots = event.participantsLimit - event.currentParticipants;
+    if (availableSlots < quantity) {
+      return res.status(400).json({
+        error: `Only ${availableSlots} slots available`,
+      });
     }
 
-    const userDetails = {
-      name,
-      phone,
-      skillLevel,
-    };
+    const totalAmount = event.price * quantity;
 
     const eventDetails = {
       name: event.name,
@@ -232,8 +234,10 @@ exports.initiateBooking = async (req, res) => {
       slot: event.slot,
     };
 
+    const userDetails = { name, phone, skillLevel, quantity };
+
     const order = await createRazorpayOrder(
-      event.price,
+      totalAmount,
       eventDetails,
       userDetails
     );
@@ -244,15 +248,13 @@ exports.initiateBooking = async (req, res) => {
       amount: order.amount,
       eventName: event.name,
       eventDate: event.date,
-      eventTime: new Date(event.date).toLocaleTimeString(),
       venue: event.venueName,
       customerName: name,
       customerPhone: phone,
       skillLevel: skillLevel,
-      prefill: {
-        name: name,
-        contact: phone,
-      },
+      quantity: quantity,
+      totalAmount: totalAmount,
+      prefill: { name, contact: phone },
     });
   } catch (error) {
     console.error("Booking Initiation Error:", error);
@@ -272,94 +274,84 @@ exports.confirmPayment = async (req, res) => {
     participantName,
     participantPhone,
     skillLevel,
+    quantity,
   } = req.body;
 
   try {
     const event = await Event.findById(id);
     if (!event) return res.status(404).json({ error: "Event not found" });
 
-    // Verify payment signature
+    const availableSlots = event.participantsLimit - event.currentParticipants;
+    if (availableSlots < quantity) {
+      return res.status(400).json({ error: "Not enough slots available" });
+    }
+
     const isValid = verifyRazorpayPayment(
       razorpayOrderId,
       paymentId,
       razorpaySignature
     );
 
-    if (isValid) {
-      if (event.currentParticipants >= event.participantsLimit) {
-        return res.status(400).json({ error: "Event is fully booked" });
-      }
-
-      // Validate skill level for new bookings
-      if (
-        !skillLevel ||
-        !["beginner", "intermediate/advanced"].includes(skillLevel)
-      ) {
-        return res.status(400).json({
-          error: "Valid skill level (beginner or intermediate) is required",
-        });
-      }
-
-      // Create participant object with skill level
-      const participant = {
-        name: participantName,
-        phone: participantPhone,
-        skillLevel: skillLevel,
-        paymentStatus: "success",
-        paymentId: paymentId,
-        orderId: razorpayOrderId,
-        bookingDate: new Date(),
-        amount: event.price,
-      };
-
-      // Use findOneAndUpdate to safely update the document
-      const updatedEvent = await Event.findOneAndUpdate(
-        { _id: id, currentParticipants: { $lt: event.participantsLimit } },
-        {
-          $push: { participants: participant },
-          $inc: { currentParticipants: 1 },
-        },
-        { new: true, runValidators: true } // Disable validation for this update
-      );
-
-      if (!updatedEvent) {
-        return res.status(400).json({ error: "Failed to update event" });
-      }
-
-      return res.status(200).json({
-        message: "Payment confirmed",
-        bookingDetails: {
-          eventName: event.name,
-          eventDate: event.date,
-          participantName,
-          participantPhone,
-          skillLevel,
-          paymentId,
-          orderId: razorpayOrderId,
-          amount: event.price,
-        },
-      });
-    } else {
+    if (!isValid) {
       return res.status(400).json({ error: "Payment verification failed" });
     }
+
+    const totalAmount = event.price * quantity;
+
+    const participant = {
+      name: participantName,
+      phone: participantPhone,
+      skillLevel: skillLevel,
+      paymentStatus: "success",
+      paymentId: paymentId,
+      orderId: razorpayOrderId,
+      bookingDate: new Date(),
+      amount: totalAmount,
+      quantity: quantity,
+    };
+
+    const updatedEvent = await Event.findOneAndUpdate(
+      {
+        _id: id,
+        currentParticipants: { $lte: event.participantsLimit - quantity },
+      },
+      {
+        $push: { participants: participant },
+        $inc: { currentParticipants: quantity },
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedEvent) {
+      return res.status(400).json({ error: "Failed to update event" });
+    }
+
+    res.status(200).json({
+      message: "Payment confirmed",
+      bookingDetails: {
+        eventName: event.name,
+        eventDate: event.date,
+        participantName,
+        participantPhone,
+        skillLevel,
+        quantity,
+        totalAmount,
+        paymentId,
+        orderId: razorpayOrderId,
+      },
+    });
   } catch (error) {
     console.error("Payment Confirmation Error:", error);
     res.status(500).json({ error: "Failed to confirm payment" });
   }
 };
-
 exports.uploadEventsFromExcel = async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "Please upload an Excel file" });
   }
 
-  // Log the file path to check if it exists
-  console.log("Uploaded File Path:", req.file.path);
-
   try {
     const filePath = req.file.path;
-
-    // Verify file exists before processing
     if (!fs.existsSync(filePath)) {
       return res.status(500).json({ message: "Uploaded file not found" });
     }
@@ -372,9 +364,6 @@ exports.uploadEventsFromExcel = async (req, res) => {
       return new Date(excelEpoch.getTime() + serial * 86400000);
     };
 
-    console.log("Parsed Excel Data:", data); // Debugging
-
-    // Validate required fields
     const events = data.map((event) => {
       if (
         !event.name ||
@@ -387,7 +376,6 @@ exports.uploadEventsFromExcel = async (req, res) => {
         !event.location ||
         !event.sportsName
       ) {
-        console.error("Missing required field in:", event);
         throw new Error("Each event must have all required fields");
       }
       return {
@@ -398,14 +386,14 @@ exports.uploadEventsFromExcel = async (req, res) => {
         participantsLimit: Number(event.participantsLimit),
         price: Number(event.price),
         venueName: event.venueName,
-        venueImage: event.venueImage || "", // Default empty string
+        venueImage: event.venueImage || "",
         location: event.location,
         sportsName: event.sportsName,
       };
     });
 
     await Event.insertMany(events);
-    fs.unlinkSync(filePath); // Delete file after processing
+    fs.unlinkSync(filePath);
 
     res.status(201).json({ message: "Events Uploaded Successfully", events });
   } catch (error) {
@@ -413,7 +401,6 @@ exports.uploadEventsFromExcel = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-
 // exports.addParticipantManually = async (req, res) => {
 //   const { id } = req.params;
 //   const { name, phone, skillLevel } = req.body;
