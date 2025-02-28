@@ -6,6 +6,7 @@ const {
 const Excel = require("exceljs");
 const XLSX = require("xlsx");
 const fs = require("fs");
+const axios = require("axios");
 
 exports.downloadEventExcel = async (req, res) => {
   try {
@@ -428,60 +429,176 @@ exports.uploadEventsFromExcel = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
-// exports.addParticipantManually = async (req, res) => {
-//   const { id } = req.params;
-//   const { name, phone, skillLevel } = req.body;
 
-//   if (!name || !phone || !skillLevel) {
-//     return res.status(400).json({
-//       error: "Please provide name, phone, and skill level",
-//     });
-//   }
+const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
+const MSG91_API_URL = process.env.MSG91_API_URL;
+const INTEGRATED_NUMBER = process.env.INTEGRATED_NUMBER;
 
-//   // Validate skill level
-//   if (!["beginner", "intermediate/advanced"].includes(skillLevel)) {
-//     return res.status(400).json({
-//       error: "Skill level must be either 'beginner' or 'intermediate'",
-//     });
-//   }
+exports.sendConfirmation = async (req, res) => {
+  const { id } = req.params;
 
-//   try {
-//     const event = await Event.findById(id);
-//     if (!event) return res.status(404).json({ error: "Event not found" });
+  try {
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ error: "Event not found" });
+    }
 
-//     // Check if slots are available
-//     if (event.currentParticipants >= event.participantsLimit) {
-//       return res.status(400).json({ error: "Event is fully booked" });
-//     }
+    const participants = event.participants
+      .filter((p) => p.paymentStatus === "success")
+      .map((p) => ({
+        phone: `91${p.phone}`,
+        name: p.name || "Player",
+      }))
+      .filter((p) => p.phone && /^\d{12}$/.test(p.phone)); // Ensure valid 12-digit numbers with country code
 
-//     // Create participant object
-//     const participant = {
-//       name,
-//       phone,
-//       skillLevel,
-//       paymentStatus: "success",
-//     };
+    // console.log("Participants to send confirmation:", participants);
 
-//     // Use findOneAndUpdate to safely update the document
-//     const updatedEvent = await Event.findOneAndUpdate(
-//       { _id: id, currentParticipants: { $lt: event.participantsLimit } },
-//       {
-//         $push: { participants: participant },
-//         $inc: { currentParticipants: 1 },
-//       },
-//       { new: true }
-//     );
+    if (participants.length === 0) {
+      return res.status(400).json({
+        error: "No valid participants with successful payments found",
+      });
+    }
 
-//     if (!updatedEvent) {
-//       return res.status(400).json({ error: "Failed to update event" });
-//     }
+    const formattedDate = new Date(event.date)
+      .toLocaleDateString("en-GB")
+      .replace(/\//g, "-");
 
-//     return res.status(200).json({
-//       message: "Participant added manually",
-//       participant,
-//     });
-//   } catch (error) {
-//     console.error("Manual Participant Addition Error:", error);
-//     res.status(500).json({ error: "Failed to add participant manually" });
-//   }
-// };
+    const payload = {
+      integrated_number: INTEGRATED_NUMBER,
+      content_type: "template",
+      payload: {
+        messaging_product: "whatsapp",
+        type: "template",
+        template: {
+          name: "playverse_game_confirmation_24_feb_template",
+          language: { code: "en", policy: "deterministic" },
+          namespace: "6e8aa1f2_7d4c_4f4b_865c_882d0f4043be",
+          to_and_components: participants.map((participant) => ({
+            to: [participant.phone], // Single phone number per entry
+            components: {
+              header_1: {
+                type: "image",
+                value:
+                  event.venueImage || "https://files.msg91.com/432091/vcaifgxt",
+              },
+              body_1: { type: "text", value: participant.name }, // Individual name
+              body_2: { type: "text", value: event.name },
+              body_3: { type: "text", value: event.venueName },
+              body_4: { type: "text", value: event.sportsName },
+              body_5: { type: "text", value: formattedDate },
+              body_6: { type: "text", value: event.slot },
+              body_7: { type: "text", value: event.location },
+              button_1: {
+                subtype: "url",
+                type: "text",
+                value: "https://sportomic.com/confirm?event=" + event._id,
+              },
+            },
+          })),
+        },
+      },
+    };
+
+    // console.log("MSG91 Payload:", JSON.stringify(payload, null, 2));
+
+    const response = await axios.post(MSG91_API_URL, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        authkey: MSG91_AUTH_KEY,
+      },
+    });
+
+    // console.log("MSG91 Response:", response.data);
+    res
+      .status(200)
+      .json({ message: "Confirmation messages sent", data: response.data });
+  } catch (error) {
+    console.error(
+      "Error sending confirmation:",
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).json({ error: "Failed to send confirmation messages" });
+  }
+};
+
+// Keep sendCancellation as is unless personalization is needed there too
+exports.sendCancellation = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({ error: "Event not found" });
+    }
+
+    const participants = event.participants
+      .filter((p) => p.paymentStatus === "success")
+      .map((p) => ({
+        phone: `91${p.phone}`,
+        name: p.name || "Player",
+      }))
+      .filter((p) => p.phone && /^\d{12}$/.test(p.phone));
+
+    // console.log("Participants to send cancellation:", participants);
+
+    if (participants.length === 0) {
+      return res.status(400).json({
+        error: "No valid participants with successful payments found",
+      });
+    }
+
+    const formattedDate = new Date(event.date)
+      .toLocaleDateString("en-GB")
+      .replace(/\//g, "-");
+
+    const payload = {
+      integrated_number: INTEGRATED_NUMBER,
+      content_type: "template",
+      payload: {
+        messaging_product: "whatsapp",
+        type: "template",
+        template: {
+          name: "playverse_cancellation_msg_24_feb",
+          language: { code: "en", policy: "deterministic" },
+          namespace: "6e8aa1f2_7d4c_4f4b_865c_882d0f4043be",
+          to_and_components: participants.map((participant) => ({
+            to: [participant.phone],
+            components: {
+              header_1: {
+                type: "image",
+                value:
+                  event.venueImage || "https://files.msg91.com/432091/vcaifgxt", // Use venueImage or fallback
+              },
+              body_1: { type: "text", value: participant.name },
+              body_2: { type: "text", value: event.name },
+              body_3: { type: "text", value: event.venueName },
+              body_4: { type: "text", value: event.sportsName },
+              body_5: { type: "text", value: formattedDate },
+              body_6: { type: "text", value: event.slot },
+            },
+          })),
+        },
+      },
+    };
+
+    // console.log("MSG91 Payload:", JSON.stringify(payload, null, 2));
+
+    const response = await axios.post(MSG91_API_URL, payload, {
+      headers: {
+        "Content-Type": "application/json",
+        authkey: MSG91_AUTH_KEY,
+      },
+    });
+
+    // console.log("MSG91 Response:", response.data);
+    res
+      .status(200)
+      .json({ message: "Cancellation messages sent", data: response.data });
+  } catch (error) {
+    console.error(
+      "Error sending cancellation:",
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).json({ error: "Failed to send cancellation messages" });
+  }
+};
