@@ -1,29 +1,34 @@
+// routes/adminRoutes.js
 const express = require("express");
 const router = express.Router();
-const adminAuth = require("../middleware/adminAuthMiddleware");
-const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 
-//login route
 router.post("/login", (req, res) => {
   const { password } = req.body;
+  const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
-  // Compare with hashed password stored in environment variable
-  const hashedPassword = crypto
-    .createHash("sha256")
-    .update(password)
-    .digest("hex");
-
-  if (hashedPassword === process.env.ADMIN_PASSWORD_HASH) {
-    // Generate a token (you might want to use JWT in production)
-    const token = process.env.ADMIN_TOKEN;
-    res.json({ token });
-  } else {
-    res.status(401).json({ message: "Invalid password" });
+  if (password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ message: "Invalid password" });
   }
+
+  const token = jwt.sign({ admin: true }, process.env.JWT_SECRET, {
+    expiresIn: "3h",
+  });
+  res.json({ token });
 });
 
-router.get("/verify", adminAuth, (req, res) => {
-  res.json({ valid: true });
+router.get("/verify", (req, res) => {
+  const token = req.headers["x-admin-token"];
+  if (!token) {
+    return res.status(401).json({ message: "No token provided" });
+  }
+
+  try {
+    jwt.verify(token, process.env.JWT_SECRET);
+    res.status(200).json({ message: "Token is valid" });
+  } catch (error) {
+    return res.status(401).json({ message: "Invalid token" });
+  }
 });
 
 module.exports = router;
