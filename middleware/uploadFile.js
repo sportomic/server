@@ -1,15 +1,18 @@
 const multer = require("multer");
 const path = require("path");
+const os = require("os");
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, "uploads/");
+    // Use system temp directory which is always available
+    cb(null, os.tmpdir());
   },
   filename: (req, file, cb) => {
     cb(null, Date.now() + "-" + file.originalname);
   },
 });
-// File filter to accept only Excel files
+
+// File filter remains the same
 const fileFilter = (req, file, cb) => {
   if (
     file.mimetype ===

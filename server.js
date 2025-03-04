@@ -3,6 +3,14 @@ const cors = require("cors");
 const bodyParser = require("body-parser");
 const dotenv = require("dotenv");
 const connectDB = require("./config/db");
+const fs = require("fs");
+const path = require("path");
+
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
 
 // Load environment variables
 dotenv.config();
@@ -19,11 +27,11 @@ app.use(express.urlencoded({ extended: true }));
 connectDB();
 
 // Routes
-// const authRoutes = require("./routes/authRoutes");
+const authRoutes = require("./routes/adminAuthRoutes");
 const eventRoutes = require("./routes/eventRoutes");
 
 // API Endpoints
-// app.use("/api/auth", authRoutes); // Authentication routes
+app.use("/api/admin", authRoutes); // Authentication routes
 app.use("/api/events", eventRoutes); // Event-related routes
 
 // Default Route
@@ -36,8 +44,6 @@ app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send({ error: "Something went wrong!" });
 });
-
-//
 
 // Start the server
 app.listen(PORT, () => {
