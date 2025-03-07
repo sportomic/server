@@ -7,6 +7,7 @@ const Excel = require("exceljs");
 const XLSX = require("xlsx");
 const fs = require("fs");
 const axios = require("axios");
+const crypto = require("crypto");
 
 exports.downloadEventExcel = async (req, res) => {
   try {
@@ -228,6 +229,7 @@ exports.deleteEvent = async (req, res) => {
   }
 };
 
+// Keep the initiateBooking function but modify it to store pending payment info
 exports.initiateBooking = async (req, res) => {
   const { id } = req.params;
   const { name, phone, skillLevel, quantity = 1 } = req.body;
@@ -270,6 +272,22 @@ exports.initiateBooking = async (req, res) => {
       userDetails
     );
 
+    // Add participant with pending status
+    const participant = {
+      name,
+      phone,
+      skillLevel,
+      quantity,
+      paymentStatus: "pending",
+      orderId: order.id,
+      bookingDate: new Date(),
+      amount: totalAmount,
+    };
+
+    await Event.findByIdAndUpdate(id, {
+      $push: { participants: participant },
+    });
+
     res.status(200).json({
       message: "Booking initiated",
       orderId: order.id,
@@ -293,157 +311,68 @@ exports.initiateBooking = async (req, res) => {
   }
 };
 
-exports.confirmPayment = async (req, res) => {
-  const { id } = req.params;
-  const {
-    paymentId,
-    razorpayOrderId,
-    razorpaySignature,
-    participantName,
-    participantPhone,
-    skillLevel,
-    quantity,
-  } = req.body;
+// Replace confirmPayment with handleRazorpayWebhook
+exports.handleRazorpayWebhook = async (req, res) => {
+  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const signature = req.headers["x-razorpay-signature"];
 
   try {
-    const event = await Event.findById(id);
-    if (!event) return res.status(404).json({ error: "Event not found" });
+    const body = JSON.stringify(req.body);
+    const expectedSignature = crypto
+      .createHmac("sha256", webhookSecret)
+      .update(body)
+      .digest("hex");
 
-    const availableSlots = event.participantsLimit - event.currentParticipants;
-    if (availableSlots < quantity) {
-      return res.status(400).json({ error: "Not enough slots available" });
+    if (signature !== expectedSignature) {
+      throw new Error("Invalid signature");
     }
 
-    const isValid = verifyRazorpayPayment(
-      razorpayOrderId,
-      paymentId,
-      razorpaySignature
-    );
+    const { payload } = req.body;
 
-    if (!isValid) {
-      return res.status(400).json({ error: "Payment verification failed" });
+    if (req.body.event === "payment.captured") {
+      const { payment } = payload;
+      const orderId = payment.entity.order_id;
+      const paymentId = payment.entity.id;
+
+      // Find event containing the order
+      const event = await Event.findOne({ "participants.orderId": orderId });
+      if (!event) {
+        throw new Error("Event not found for the given order ID");
+      }
+
+      // Update participant status and increment currentParticipants
+      const participant = event.participants.find((p) => p.orderId === orderId);
+      if (!participant) {
+        throw new Error("Participant not found");
+      }
+
+      if (participant.paymentStatus === "pending") {
+        const updatedEvent = await Event.findOneAndUpdate(
+          { _id: event._id, "participants.orderId": orderId },
+          {
+            $set: {
+              "participants.$.paymentStatus": "success",
+              "participants.$.paymentId": paymentId,
+            },
+            $inc: { currentParticipants: participant.quantity },
+          },
+          { new: true }
+        );
+
+        if (!updatedEvent) {
+          throw new Error("Failed to update event");
+        }
+
+        console.log(`Payment successful for order ${orderId}`);
+      }
     }
 
-    const totalAmount = event.price * quantity;
-
-    const participant = {
-      name: participantName,
-      phone: participantPhone,
-      skillLevel: skillLevel,
-      paymentStatus: "success",
-      paymentId: paymentId,
-      orderId: razorpayOrderId,
-      bookingDate: new Date(),
-      amount: totalAmount,
-      quantity: quantity,
-    };
-
-    const updatedEvent = await Event.findOneAndUpdate(
-      {
-        _id: id,
-        currentParticipants: { $lte: event.participantsLimit - quantity },
-      },
-      {
-        $push: { participants: participant },
-        $inc: { currentParticipants: quantity },
-      },
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedEvent) {
-      return res.status(400).json({ error: "Failed to update event" });
-    }
-
-    res.status(200).json({
-      message: "Payment confirmed",
-      bookingDetails: {
-        eventName: event.name,
-        eventDate: event.date,
-        participantName,
-        participantPhone,
-        skillLevel,
-        quantity,
-        totalAmount,
-        paymentId,
-        orderId: razorpayOrderId,
-      },
-    });
+    res.json({ status: "ok" });
   } catch (error) {
-    console.error("Payment Confirmation Error:", error);
-    res.status(500).json({ error: "Failed to confirm payment" });
+    console.error("Webhook Error:", error);
+    res.status(400).json({ error: error.message });
   }
 };
-
-// const crypto = require("crypto");
-// exports.handleRazorpayWebhook = async (req, res) => {
-//   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-//   const signature = req.headers["x-razorpay-signature"];
-//   const body = JSON.stringify(req.body);
-
-//   const expectedSignature = crypto
-//     .createHmac("sha256", secret)
-//     .update(body)
-//     .digest("hex");
-
-//   if (expectedSignature !== signature) {
-//     console.error("Invalid webhook signature");
-//     return res.status(400).json({ error: "Invalid signature" });
-//   }
-
-//   const eventType = req.body.event;
-//   const payload = req.body.payload;
-
-//   if (eventType === "payment.authorized" || eventType === "payment.captured") {
-//     const payment = payload.payment.entity;
-//     const orderId = payment.order_id;
-//     const paymentId = payment.id;
-//     const amount = payment.amount / 100; // Convert paise to rupees
-
-//     try {
-//       const event = await Event.findOne({ "participants.orderId": orderId });
-//       if (!event) {
-//         console.error("Event not found for orderId:", orderId);
-//         return res.status(404).json({ error: "Event not found" });
-//       }
-
-//       const participant = event.participants.find(
-//         (p) => p.orderId === orderId && p.paymentStatus === "success"
-//       );
-
-//       if (!participant) {
-//         const updatedEvent = await Event.findOneAndUpdate(
-//           { _id: event._id, "participants.orderId": orderId },
-//           {
-//             $set: {
-//               "participants.$.paymentStatus": "success",
-//               "participants.$.paymentId": paymentId,
-//               "participants.$.bookingDate": new Date(),
-//               "participants.$.amount": amount,
-//             },
-//             $inc: {
-//               currentParticipants: event.participants.find(
-//                 (p) => p.orderId === orderId
-//               ).quantity,
-//             },
-//           },
-//           { new: true }
-//         );
-
-//         if (!updatedEvent) {
-//           console.error("Failed to update event for orderId:", orderId);
-//           return res.status(400).json({ error: "Failed to update event" });
-//         }
-
-//         console.log(`Payment recorded for orderId: ${orderId}`);
-//       }
-//     } catch (error) {
-//       console.error("Webhook processing error:", error);
-//       return res.status(500).json({ error: "Failed to process webhook" });
-//     }
-//   }
-
-//   res.status(200).json({ status: "ok" });
-// };
 
 exports.uploadEventsFromExcel = async (req, res) => {
   if (!req.file) {
