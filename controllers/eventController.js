@@ -24,6 +24,7 @@ exports.downloadEventExcel = async (req, res) => {
       "Date",
       "Time",
       "Event Price",
+      "Payment Id",
       "Participant Name",
       "Participant Phone",
       "Participant Id",
@@ -43,6 +44,7 @@ exports.downloadEventExcel = async (req, res) => {
             event.date,
             event.slot,
             event.price,
+            participant.paymentId,
             participant.name,
             participant.phone,
             participant.id,
@@ -517,7 +519,6 @@ exports.uploadEventsFromExcel = async (req, res) => {
   }
 };
 
-//msg91 integration
 const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
 const MSG91_API_URL = process.env.MSG91_API_URL;
 const INTEGRATED_NUMBER = process.env.INTEGRATED_NUMBER;
@@ -537,9 +538,7 @@ exports.sendConfirmation = async (req, res) => {
         phone: `91${p.phone}`,
         name: p.name || "Player",
       }))
-      .filter((p) => p.phone && /^\d{12}$/.test(p.phone)); // Ensure valid 12-digit numbers with country code
-
-    // console.log("Participants to send confirmation:", participants);
+      .filter((p) => p.phone && /^\d{12}$/.test(p.phone));
 
     if (participants.length === 0) {
       return res.status(400).json({
@@ -562,14 +561,14 @@ exports.sendConfirmation = async (req, res) => {
           language: { code: "en", policy: "deterministic" },
           namespace: "6e8aa1f2_7d4c_4f4b_865c_882d0f4043be",
           to_and_components: participants.map((participant) => ({
-            to: [participant.phone], // Single phone number per entry
+            to: [participant.phone],
             components: {
               header_1: {
                 type: "image",
                 value:
                   event.venueImage || "https://files.msg91.com/432091/vcaifgxt",
               },
-              body_1: { type: "text", value: participant.name }, // Individual name
+              body_1: { type: "text", value: participant.name },
               body_2: { type: "text", value: event.name },
               body_3: { type: "text", value: event.venueName },
               body_4: { type: "text", value: event.sportsName },
@@ -587,8 +586,6 @@ exports.sendConfirmation = async (req, res) => {
       },
     };
 
-    // console.log("MSG91 Payload:", JSON.stringify(payload, null, 2));
-
     const response = await axios.post(MSG91_API_URL, payload, {
       headers: {
         "Content-Type": "application/json",
@@ -596,10 +593,15 @@ exports.sendConfirmation = async (req, res) => {
       },
     });
 
-    // console.log("MSG91 Response:", response.data);
-    res
-      .status(200)
-      .json({ message: "Confirmation messages sent", data: response.data });
+    // Increment confirmationCount after successful send
+    event.confirmationCount += 1;
+    await event.save();
+
+    res.status(200).json({
+      message: "Confirmation messages sent",
+      confirmationCount: event.confirmationCount,
+      data: response.data,
+    });
   } catch (error) {
     console.error(
       "Error sending confirmation:",
@@ -625,8 +627,6 @@ exports.sendCancellation = async (req, res) => {
         name: p.name || "Player",
       }))
       .filter((p) => p.phone && /^\d{12}$/.test(p.phone));
-
-    // console.log("Participants to send cancellation:", participants);
 
     if (participants.length === 0) {
       return res.status(400).json({
@@ -654,7 +654,7 @@ exports.sendCancellation = async (req, res) => {
               header_1: {
                 type: "image",
                 value:
-                  event.venueImage || "https://files.msg91.com/432091/vcaifgxt", // Use venueImage or fallback
+                  event.venueImage || "https://files.msg91.com/432091/vcaifgxt",
               },
               body_1: { type: "text", value: participant.name },
               body_2: { type: "text", value: event.name },
@@ -668,8 +668,6 @@ exports.sendCancellation = async (req, res) => {
       },
     };
 
-    // console.log("MSG91 Payload:", JSON.stringify(payload, null, 2));
-
     const response = await axios.post(MSG91_API_URL, payload, {
       headers: {
         "Content-Type": "application/json",
@@ -677,10 +675,15 @@ exports.sendCancellation = async (req, res) => {
       },
     });
 
-    // console.log("MSG91 Response:", response.data);
-    res
-      .status(200)
-      .json({ message: "Cancellation messages sent", data: response.data });
+    // Increment cancellationCount after successful send
+    event.cancellationCount += 1;
+    await event.save();
+
+    res.status(200).json({
+      message: "Cancellation messages sent",
+      cancellationCount: event.cancellationCount,
+      data: response.data,
+    });
   } catch (error) {
     console.error(
       "Error sending cancellation:",
