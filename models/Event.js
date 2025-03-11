@@ -64,6 +64,19 @@ const eventSchema = new mongoose.Schema({
   venueName: { type: String, required: true },
   venueImage: { type: String },
   location: { type: String, required: true },
+
+  //counters
+  confirmationCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+
+  cancellationCount: {
+    type: Number,
+    default: 0,
+    min: 0,
+  },
 });
 
 // Add validation for participants array

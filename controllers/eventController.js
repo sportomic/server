@@ -7,7 +7,6 @@ const Excel = require("exceljs");
 const XLSX = require("xlsx");
 const fs = require("fs");
 const axios = require("axios");
-const crypto = require("crypto");
 
 exports.downloadEventExcel = async (req, res) => {
   try {
@@ -25,6 +24,7 @@ exports.downloadEventExcel = async (req, res) => {
       "Date",
       "Time",
       "Event Price",
+      "Payment Id",
       "Participant Name",
       "Participant Phone",
       "Participant Id",
@@ -44,6 +44,7 @@ exports.downloadEventExcel = async (req, res) => {
             event.date,
             event.slot,
             event.price,
+            participant.paymentId,
             participant.name,
             participant.phone,
             participant.id,
@@ -229,7 +230,6 @@ exports.deleteEvent = async (req, res) => {
   }
 };
 
-// Keep the initiateBooking function but modify it to store pending payment info
 exports.initiateBooking = async (req, res) => {
   const { id } = req.params;
   const { name, phone, skillLevel, quantity = 1 } = req.body;
@@ -272,22 +272,6 @@ exports.initiateBooking = async (req, res) => {
       userDetails
     );
 
-    // Add participant with pending status
-    const participant = {
-      name,
-      phone,
-      skillLevel,
-      quantity,
-      paymentStatus: "pending",
-      orderId: order.id,
-      bookingDate: new Date(),
-      amount: totalAmount,
-    };
-
-    await Event.findByIdAndUpdate(id, {
-      $push: { participants: participant },
-    });
-
     res.status(200).json({
       message: "Booking initiated",
       orderId: order.id,
@@ -311,68 +295,157 @@ exports.initiateBooking = async (req, res) => {
   }
 };
 
-// Replace confirmPayment with handleRazorpayWebhook
-exports.handleRazorpayWebhook = async (req, res) => {
-  const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const signature = req.headers["x-razorpay-signature"];
+exports.confirmPayment = async (req, res) => {
+  const { id } = req.params;
+  const {
+    paymentId,
+    razorpayOrderId,
+    razorpaySignature,
+    participantName,
+    participantPhone,
+    skillLevel,
+    quantity,
+  } = req.body;
 
   try {
-    const body = JSON.stringify(req.body);
-    const expectedSignature = crypto
-      .createHmac("sha256", webhookSecret)
-      .update(body)
-      .digest("hex");
+    const event = await Event.findById(id);
+    if (!event) return res.status(404).json({ error: "Event not found" });
 
-    if (signature !== expectedSignature) {
-      throw new Error("Invalid signature");
+    const availableSlots = event.participantsLimit - event.currentParticipants;
+    if (availableSlots < quantity) {
+      return res.status(400).json({ error: "Not enough slots available" });
     }
 
-    const { payload } = req.body;
+    const isValid = verifyRazorpayPayment(
+      razorpayOrderId,
+      paymentId,
+      razorpaySignature
+    );
 
-    if (req.body.event === "payment.captured") {
-      const { payment } = payload;
-      const orderId = payment.entity.order_id;
-      const paymentId = payment.entity.id;
-
-      // Find event containing the order
-      const event = await Event.findOne({ "participants.orderId": orderId });
-      if (!event) {
-        throw new Error("Event not found for the given order ID");
-      }
-
-      // Update participant status and increment currentParticipants
-      const participant = event.participants.find((p) => p.orderId === orderId);
-      if (!participant) {
-        throw new Error("Participant not found");
-      }
-
-      if (participant.paymentStatus === "pending") {
-        const updatedEvent = await Event.findOneAndUpdate(
-          { _id: event._id, "participants.orderId": orderId },
-          {
-            $set: {
-              "participants.$.paymentStatus": "success",
-              "participants.$.paymentId": paymentId,
-            },
-            $inc: { currentParticipants: participant.quantity },
-          },
-          { new: true }
-        );
-
-        if (!updatedEvent) {
-          throw new Error("Failed to update event");
-        }
-
-        console.log(`Payment successful for order ${orderId}`);
-      }
+    if (!isValid) {
+      return res.status(400).json({ error: "Payment verification failed" });
     }
 
-    res.json({ status: "ok" });
+    const totalAmount = event.price * quantity;
+
+    const participant = {
+      name: participantName,
+      phone: participantPhone,
+      skillLevel: skillLevel,
+      paymentStatus: "success",
+      paymentId: paymentId,
+      orderId: razorpayOrderId,
+      bookingDate: new Date(),
+      amount: totalAmount,
+      quantity: quantity,
+    };
+
+    const updatedEvent = await Event.findOneAndUpdate(
+      {
+        _id: id,
+        currentParticipants: { $lte: event.participantsLimit - quantity },
+      },
+      {
+        $push: { participants: participant },
+        $inc: { currentParticipants: quantity },
+      },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedEvent) {
+      return res.status(400).json({ error: "Failed to update event" });
+    }
+
+    res.status(200).json({
+      message: "Payment confirmed",
+      bookingDetails: {
+        eventName: event.name,
+        eventDate: event.date,
+        participantName,
+        participantPhone,
+        skillLevel,
+        quantity,
+        totalAmount,
+        paymentId,
+        orderId: razorpayOrderId,
+      },
+    });
   } catch (error) {
-    console.error("Webhook Error:", error);
-    res.status(400).json({ error: error.message });
+    console.error("Payment Confirmation Error:", error);
+    res.status(500).json({ error: "Failed to confirm payment" });
   }
 };
+
+// const crypto = require("crypto");
+// exports.handleRazorpayWebhook = async (req, res) => {
+//   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+//   const signature = req.headers["x-razorpay-signature"];
+//   const body = JSON.stringify(req.body);
+
+//   const expectedSignature = crypto
+//     .createHmac("sha256", secret)
+//     .update(body)
+//     .digest("hex");
+
+//   if (expectedSignature !== signature) {
+//     console.error("Invalid webhook signature");
+//     return res.status(400).json({ error: "Invalid signature" });
+//   }
+
+//   const eventType = req.body.event;
+//   const payload = req.body.payload;
+
+//   if (eventType === "payment.authorized" || eventType === "payment.captured") {
+//     const payment = payload.payment.entity;
+//     const orderId = payment.order_id;
+//     const paymentId = payment.id;
+//     const amount = payment.amount / 100; // Convert paise to rupees
+
+//     try {
+//       const event = await Event.findOne({ "participants.orderId": orderId });
+//       if (!event) {
+//         console.error("Event not found for orderId:", orderId);
+//         return res.status(404).json({ error: "Event not found" });
+//       }
+
+//       const participant = event.participants.find(
+//         (p) => p.orderId === orderId && p.paymentStatus === "success"
+//       );
+
+//       if (!participant) {
+//         const updatedEvent = await Event.findOneAndUpdate(
+//           { _id: event._id, "participants.orderId": orderId },
+//           {
+//             $set: {
+//               "participants.$.paymentStatus": "success",
+//               "participants.$.paymentId": paymentId,
+//               "participants.$.bookingDate": new Date(),
+//               "participants.$.amount": amount,
+//             },
+//             $inc: {
+//               currentParticipants: event.participants.find(
+//                 (p) => p.orderId === orderId
+//               ).quantity,
+//             },
+//           },
+//           { new: true }
+//         );
+
+//         if (!updatedEvent) {
+//           console.error("Failed to update event for orderId:", orderId);
+//           return res.status(400).json({ error: "Failed to update event" });
+//         }
+
+//         console.log(`Payment recorded for orderId: ${orderId}`);
+//       }
+//     } catch (error) {
+//       console.error("Webhook processing error:", error);
+//       return res.status(500).json({ error: "Failed to process webhook" });
+//     }
+//   }
+
+//   res.status(200).json({ status: "ok" });
+// };
 
 exports.uploadEventsFromExcel = async (req, res) => {
   if (!req.file) {
@@ -446,7 +519,6 @@ exports.uploadEventsFromExcel = async (req, res) => {
   }
 };
 
-//msg91 integration
 const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
 const MSG91_API_URL = process.env.MSG91_API_URL;
 const INTEGRATED_NUMBER = process.env.INTEGRATED_NUMBER;
@@ -466,9 +538,7 @@ exports.sendConfirmation = async (req, res) => {
         phone: `91${p.phone}`,
         name: p.name || "Player",
       }))
-      .filter((p) => p.phone && /^\d{12}$/.test(p.phone)); // Ensure valid 12-digit numbers with country code
-
-    // console.log("Participants to send confirmation:", participants);
+      .filter((p) => p.phone && /^\d{12}$/.test(p.phone));
 
     if (participants.length === 0) {
       return res.status(400).json({
@@ -491,14 +561,14 @@ exports.sendConfirmation = async (req, res) => {
           language: { code: "en", policy: "deterministic" },
           namespace: "6e8aa1f2_7d4c_4f4b_865c_882d0f4043be",
           to_and_components: participants.map((participant) => ({
-            to: [participant.phone], // Single phone number per entry
+            to: [participant.phone],
             components: {
               header_1: {
                 type: "image",
                 value:
                   event.venueImage || "https://files.msg91.com/432091/vcaifgxt",
               },
-              body_1: { type: "text", value: participant.name }, // Individual name
+              body_1: { type: "text", value: participant.name },
               body_2: { type: "text", value: event.name },
               body_3: { type: "text", value: event.venueName },
               body_4: { type: "text", value: event.sportsName },
@@ -516,8 +586,6 @@ exports.sendConfirmation = async (req, res) => {
       },
     };
 
-    // console.log("MSG91 Payload:", JSON.stringify(payload, null, 2));
-
     const response = await axios.post(MSG91_API_URL, payload, {
       headers: {
         "Content-Type": "application/json",
@@ -525,10 +593,15 @@ exports.sendConfirmation = async (req, res) => {
       },
     });
 
-    // console.log("MSG91 Response:", response.data);
-    res
-      .status(200)
-      .json({ message: "Confirmation messages sent", data: response.data });
+    // Increment confirmationCount after successful send
+    event.confirmationCount += 1;
+    await event.save();
+
+    res.status(200).json({
+      message: "Confirmation messages sent",
+      confirmationCount: event.confirmationCount,
+      data: response.data,
+    });
   } catch (error) {
     console.error(
       "Error sending confirmation:",
@@ -554,8 +627,6 @@ exports.sendCancellation = async (req, res) => {
         name: p.name || "Player",
       }))
       .filter((p) => p.phone && /^\d{12}$/.test(p.phone));
-
-    // console.log("Participants to send cancellation:", participants);
 
     if (participants.length === 0) {
       return res.status(400).json({
@@ -583,7 +654,7 @@ exports.sendCancellation = async (req, res) => {
               header_1: {
                 type: "image",
                 value:
-                  event.venueImage || "https://files.msg91.com/432091/vcaifgxt", // Use venueImage or fallback
+                  event.venueImage || "https://files.msg91.com/432091/vcaifgxt",
               },
               body_1: { type: "text", value: participant.name },
               body_2: { type: "text", value: event.name },
@@ -597,8 +668,6 @@ exports.sendCancellation = async (req, res) => {
       },
     };
 
-    // console.log("MSG91 Payload:", JSON.stringify(payload, null, 2));
-
     const response = await axios.post(MSG91_API_URL, payload, {
       headers: {
         "Content-Type": "application/json",
@@ -606,10 +675,15 @@ exports.sendCancellation = async (req, res) => {
       },
     });
 
-    // console.log("MSG91 Response:", response.data);
-    res
-      .status(200)
-      .json({ message: "Cancellation messages sent", data: response.data });
+    // Increment cancellationCount after successful send
+    event.cancellationCount += 1;
+    await event.save();
+
+    res.status(200).json({
+      message: "Cancellation messages sent",
+      cancellationCount: event.cancellationCount,
+      data: response.data,
+    });
   } catch (error) {
     console.error(
       "Error sending cancellation:",
