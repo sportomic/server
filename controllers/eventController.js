@@ -319,6 +319,8 @@ exports.initiateBooking = async (req, res) => {
 };
 
 exports.handleRazorpayWebhook = async (req, res) => {
+  console.log("Webhook received:", req.body);
+
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers["x-razorpay-signature"];
   const body = JSON.stringify(req.body);
@@ -329,18 +331,23 @@ exports.handleRazorpayWebhook = async (req, res) => {
     .digest("hex");
 
   if (expectedSignature !== signature) {
-    console.error("Invalid webhook signature");
+    console.error("Invalid webhook signature", {
+      expectedSignature,
+      signature,
+    });
     return res.status(400).json({ error: "Invalid signature" });
   }
 
   const eventType = req.body.event;
   const payload = req.body.payload;
 
+  console.log("Webhook event:", eventType);
+
   if (eventType === "payment.authorized" || eventType === "payment.captured") {
     const payment = payload.payment.entity;
     const orderId = payment.order_id;
     const paymentId = payment.id;
-    const amount = payment.amount / 100; // Convert paise to rupees
+    const amount = payment.amount / 100;
 
     try {
       const event = await Event.findOne({ "participants.orderId": orderId });
@@ -376,16 +383,19 @@ exports.handleRazorpayWebhook = async (req, res) => {
         return res.status(400).json({ error: "Not enough slots available" });
       }
 
-      event.participants[participantIndex] = {
-        ...participant,
-        paymentStatus: "success",
-        paymentId,
-        bookingDate: new Date(),
-        amount,
-      };
-
-      event.currentParticipants = totalBookedSlots + participant.quantity;
-      await event.save();
+      // Update only specific fields of the participant using $set
+      await Event.updateOne(
+        { _id: event._id, "participants.orderId": orderId },
+        {
+          $set: {
+            "participants.$.paymentStatus": "success",
+            "participants.$.paymentId": paymentId,
+            "participants.$.bookingDate": new Date(),
+            "participants.$.amount": amount,
+          },
+          $inc: { currentParticipants: participant.quantity },
+        }
+      );
 
       console.log(`Payment confirmed via webhook for orderId: ${orderId}`);
       res.status(200).json({ status: "ok" });
@@ -398,27 +408,23 @@ exports.handleRazorpayWebhook = async (req, res) => {
     const orderId = payment.order_id;
 
     try {
-      const event = await Event.findOne({ "participants.orderId": orderId });
-      if (event) {
-        const participantIndex = event.participants.findIndex(
-          (p) => p.orderId === orderId && p.paymentStatus === "pending"
-        );
-        if (participantIndex !== -1) {
-          event.participants[participantIndex].paymentStatus = "failed";
-          await event.save();
-          console.log(`Payment failed for orderId: ${orderId}`);
+      await Event.updateOne(
+        { "participants.orderId": orderId },
+        {
+          $set: { "participants.$.paymentStatus": "failed" },
         }
-      }
+      );
+      console.log(`Payment failed for orderId: ${orderId}`);
       res.status(200).json({ status: "ok" });
     } catch (error) {
       console.error("Webhook failure processing error:", error);
-      res.status(500).json({ error: "Failed to process webhook" });
+      return res.status(500).json({ error: "Failed to process webhook" });
     }
   } else {
+    console.log("Unhandled webhook event:", eventType);
     res.status(200).json({ status: "ok" });
   }
 };
-
 exports.uploadEventsFromExcel = async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "Please upload an Excel file" });
