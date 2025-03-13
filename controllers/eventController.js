@@ -7,6 +7,7 @@ const Excel = require("exceljs");
 const XLSX = require("xlsx");
 const fs = require("fs");
 const axios = require("axios");
+const crypto = require("crypto");
 
 exports.downloadEventExcel = async (req, res) => {
   try {
@@ -112,7 +113,7 @@ exports.getEventById = async (req, res) => {
     res.status(500).json({ error: "Failed to fetch event" });
   }
 };
-//get user based over successfull payment based on event id
+
 exports.getSuccessfulPayments = async (req, res) => {
   const { id } = req.params;
 
@@ -248,7 +249,14 @@ exports.initiateBooking = async (req, res) => {
     const event = await Event.findById(id);
     if (!event) return res.status(404).json({ error: "Event not found" });
 
-    const availableSlots = event.participantsLimit - event.currentParticipants;
+    const successfulParticipants = event.participants.filter(
+      (p) => p.paymentStatus === "success"
+    );
+    const totalBookedSlots = successfulParticipants.reduce(
+      (acc, curr) => acc + curr.quantity,
+      0
+    );
+    const availableSlots = event.participantsLimit - totalBookedSlots;
     if (availableSlots < quantity) {
       return res.status(400).json({
         error: `Only ${availableSlots} slots available`,
@@ -272,6 +280,21 @@ exports.initiateBooking = async (req, res) => {
       userDetails
     );
 
+    // Add participant as pending
+    const participant = {
+      name,
+      phone,
+      skillLevel,
+      paymentStatus: "pending",
+      orderId: order.id,
+      bookingDate: new Date(),
+      amount: totalAmount,
+      quantity,
+    };
+
+    event.participants.push(participant);
+    await event.save();
+
     res.status(200).json({
       message: "Booking initiated",
       orderId: order.id,
@@ -281,9 +304,9 @@ exports.initiateBooking = async (req, res) => {
       venue: event.venueName,
       customerName: name,
       customerPhone: phone,
-      skillLevel: skillLevel,
-      quantity: quantity,
-      totalAmount: totalAmount,
+      skillLevel,
+      quantity,
+      totalAmount,
       prefill: { name, contact: phone },
     });
   } catch (error) {
@@ -295,157 +318,106 @@ exports.initiateBooking = async (req, res) => {
   }
 };
 
-exports.confirmPayment = async (req, res) => {
-  const { id } = req.params;
-  const {
-    paymentId,
-    razorpayOrderId,
-    razorpaySignature,
-    participantName,
-    participantPhone,
-    skillLevel,
-    quantity,
-  } = req.body;
+exports.handleRazorpayWebhook = async (req, res) => {
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  const signature = req.headers["x-razorpay-signature"];
+  const body = JSON.stringify(req.body);
 
-  try {
-    const event = await Event.findById(id);
-    if (!event) return res.status(404).json({ error: "Event not found" });
+  const expectedSignature = crypto
+    .createHmac("sha256", secret)
+    .update(body)
+    .digest("hex");
 
-    const availableSlots = event.participantsLimit - event.currentParticipants;
-    if (availableSlots < quantity) {
-      return res.status(400).json({ error: "Not enough slots available" });
-    }
+  if (expectedSignature !== signature) {
+    console.error("Invalid webhook signature");
+    return res.status(400).json({ error: "Invalid signature" });
+  }
 
-    const isValid = verifyRazorpayPayment(
-      razorpayOrderId,
-      paymentId,
-      razorpaySignature
-    );
+  const eventType = req.body.event;
+  const payload = req.body.payload;
 
-    if (!isValid) {
-      return res.status(400).json({ error: "Payment verification failed" });
-    }
+  if (eventType === "payment.authorized" || eventType === "payment.captured") {
+    const payment = payload.payment.entity;
+    const orderId = payment.order_id;
+    const paymentId = payment.id;
+    const amount = payment.amount / 100; // Convert paise to rupees
 
-    const totalAmount = event.price * quantity;
+    try {
+      const event = await Event.findOne({ "participants.orderId": orderId });
+      if (!event) {
+        console.error("Event not found for orderId:", orderId);
+        return res.status(404).json({ error: "Event not found" });
+      }
 
-    const participant = {
-      name: participantName,
-      phone: participantPhone,
-      skillLevel: skillLevel,
-      paymentStatus: "success",
-      paymentId: paymentId,
-      orderId: razorpayOrderId,
-      bookingDate: new Date(),
-      amount: totalAmount,
-      quantity: quantity,
-    };
+      const participantIndex = event.participants.findIndex(
+        (p) => p.orderId === orderId && p.paymentStatus === "pending"
+      );
 
-    const updatedEvent = await Event.findOneAndUpdate(
-      {
-        _id: id,
-        currentParticipants: { $lte: event.participantsLimit - quantity },
-      },
-      {
-        $push: { participants: participant },
-        $inc: { currentParticipants: quantity },
-      },
-      { new: true, runValidators: true }
-    );
+      if (participantIndex === -1) {
+        console.log(
+          "Participant already processed or not found for orderId:",
+          orderId
+        );
+        return res.status(200).json({ status: "ok" });
+      }
 
-    if (!updatedEvent) {
-      return res.status(400).json({ error: "Failed to update event" });
-    }
+      const participant = event.participants[participantIndex];
+      const successfulParticipants = event.participants.filter(
+        (p) => p.paymentStatus === "success"
+      );
+      const totalBookedSlots = successfulParticipants.reduce(
+        (acc, curr) => acc + curr.quantity,
+        0
+      );
+      const availableSlots = event.participantsLimit - totalBookedSlots;
 
-    res.status(200).json({
-      message: "Payment confirmed",
-      bookingDetails: {
-        eventName: event.name,
-        eventDate: event.date,
-        participantName,
-        participantPhone,
-        skillLevel,
-        quantity,
-        totalAmount,
+      if (availableSlots < participant.quantity) {
+        console.error("Not enough slots available for orderId:", orderId);
+        return res.status(400).json({ error: "Not enough slots available" });
+      }
+
+      event.participants[participantIndex] = {
+        ...participant,
+        paymentStatus: "success",
         paymentId,
-        orderId: razorpayOrderId,
-      },
-    });
-  } catch (error) {
-    console.error("Payment Confirmation Error:", error);
-    res.status(500).json({ error: "Failed to confirm payment" });
+        bookingDate: new Date(),
+        amount,
+      };
+
+      event.currentParticipants = totalBookedSlots + participant.quantity;
+      await event.save();
+
+      console.log(`Payment confirmed via webhook for orderId: ${orderId}`);
+      res.status(200).json({ status: "ok" });
+    } catch (error) {
+      console.error("Webhook processing error:", error);
+      return res.status(500).json({ error: "Failed to process webhook" });
+    }
+  } else if (eventType === "payment.failed") {
+    const payment = payload.payment.entity;
+    const orderId = payment.order_id;
+
+    try {
+      const event = await Event.findOne({ "participants.orderId": orderId });
+      if (event) {
+        const participantIndex = event.participants.findIndex(
+          (p) => p.orderId === orderId && p.paymentStatus === "pending"
+        );
+        if (participantIndex !== -1) {
+          event.participants[participantIndex].paymentStatus = "failed";
+          await event.save();
+          console.log(`Payment failed for orderId: ${orderId}`);
+        }
+      }
+      res.status(200).json({ status: "ok" });
+    } catch (error) {
+      console.error("Webhook failure processing error:", error);
+      res.status(500).json({ error: "Failed to process webhook" });
+    }
+  } else {
+    res.status(200).json({ status: "ok" });
   }
 };
-
-// const crypto = require("crypto");
-// exports.handleRazorpayWebhook = async (req, res) => {
-//   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-//   const signature = req.headers["x-razorpay-signature"];
-//   const body = JSON.stringify(req.body);
-
-//   const expectedSignature = crypto
-//     .createHmac("sha256", secret)
-//     .update(body)
-//     .digest("hex");
-
-//   if (expectedSignature !== signature) {
-//     console.error("Invalid webhook signature");
-//     return res.status(400).json({ error: "Invalid signature" });
-//   }
-
-//   const eventType = req.body.event;
-//   const payload = req.body.payload;
-
-//   if (eventType === "payment.authorized" || eventType === "payment.captured") {
-//     const payment = payload.payment.entity;
-//     const orderId = payment.order_id;
-//     const paymentId = payment.id;
-//     const amount = payment.amount / 100; // Convert paise to rupees
-
-//     try {
-//       const event = await Event.findOne({ "participants.orderId": orderId });
-//       if (!event) {
-//         console.error("Event not found for orderId:", orderId);
-//         return res.status(404).json({ error: "Event not found" });
-//       }
-
-//       const participant = event.participants.find(
-//         (p) => p.orderId === orderId && p.paymentStatus === "success"
-//       );
-
-//       if (!participant) {
-//         const updatedEvent = await Event.findOneAndUpdate(
-//           { _id: event._id, "participants.orderId": orderId },
-//           {
-//             $set: {
-//               "participants.$.paymentStatus": "success",
-//               "participants.$.paymentId": paymentId,
-//               "participants.$.bookingDate": new Date(),
-//               "participants.$.amount": amount,
-//             },
-//             $inc: {
-//               currentParticipants: event.participants.find(
-//                 (p) => p.orderId === orderId
-//               ).quantity,
-//             },
-//           },
-//           { new: true }
-//         );
-
-//         if (!updatedEvent) {
-//           console.error("Failed to update event for orderId:", orderId);
-//           return res.status(400).json({ error: "Failed to update event" });
-//         }
-
-//         console.log(`Payment recorded for orderId: ${orderId}`);
-//       }
-//     } catch (error) {
-//       console.error("Webhook processing error:", error);
-//       return res.status(500).json({ error: "Failed to process webhook" });
-//     }
-//   }
-
-//   res.status(200).json({ status: "ok" });
-// };
 
 exports.uploadEventsFromExcel = async (req, res) => {
   if (!req.file) {
@@ -462,22 +434,14 @@ exports.uploadEventsFromExcel = async (req, res) => {
     const sheetName = workbook.SheetNames[0];
     const data = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
     const excelSerialToJSDate = (serial) => {
-      // Create a date based on Excel's epoch (December 30, 1899)
       const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-
-      // Calculate milliseconds and create a UTC date
       const utcDate = new Date(excelEpoch.getTime() + serial * 86400000);
-
-      // Adjust for the Excel leap year bug (1900 is not a leap year)
       if (serial >= 60) {
         utcDate.setTime(utcDate.getTime() + 86400000);
       }
-
-      // Return the date keeping it in UTC to avoid timezone shifts
       const year = utcDate.getUTCFullYear();
       const month = utcDate.getUTCMonth();
       const day = utcDate.getUTCDate();
-
       return new Date(Date.UTC(year, month, day));
     };
 
@@ -593,7 +557,6 @@ exports.sendConfirmation = async (req, res) => {
       },
     });
 
-    // Increment confirmationCount after successful send
     event.confirmationCount += 1;
     await event.save();
 
@@ -675,7 +638,6 @@ exports.sendCancellation = async (req, res) => {
       },
     });
 
-    // Increment cancellationCount after successful send
     event.cancellationCount += 1;
     await event.save();
 
