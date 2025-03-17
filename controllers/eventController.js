@@ -7,6 +7,7 @@ const Excel = require("exceljs");
 const XLSX = require("xlsx");
 const fs = require("fs");
 const axios = require("axios");
+const mongoose = require("mongoose");
 const crypto = require("crypto");
 
 exports.downloadEventExcel = async (req, res) => {
@@ -246,69 +247,92 @@ exports.initiateBooking = async (req, res) => {
   }
 
   try {
-    const event = await Event.findById(id);
-    if (!event) return res.status(404).json({ error: "Event not found" });
+    // Use a session for atomicity
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    const successfulParticipants = event.participants.filter(
-      (p) => p.paymentStatus === "success"
-    );
-    const totalBookedSlots = successfulParticipants.reduce(
-      (acc, curr) => acc + curr.quantity,
-      0
-    );
-    const availableSlots = event.participantsLimit - totalBookedSlots;
-    if (availableSlots < quantity) {
-      return res.status(400).json({
-        error: `Only ${availableSlots} slots available`,
+    try {
+      const event = await Event.findById(id).session(session);
+      if (!event) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ error: "Event not found" });
+      }
+
+      // Only count confirmed participants
+      const successfulParticipants = event.participants.filter(
+        (p) => p.paymentStatus === "success"
+      );
+
+      const totalBookedSlots = successfulParticipants.reduce(
+        (acc, curr) => acc + curr.quantity,
+        0
+      );
+
+      const availableSlots = event.participantsLimit - totalBookedSlots;
+
+      if (availableSlots < quantity) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          error: `Only ${availableSlots} slots available`,
+        });
+      }
+
+      const totalAmount = event.price * quantity;
+
+      const eventDetails = {
+        name: event.name,
+        date: event.date,
+        venueName: event.venueName,
+        slot: event.slot,
+      };
+
+      const userDetails = { name, phone, skillLevel, quantity };
+
+      const order = await createRazorpayOrder(
+        totalAmount,
+        eventDetails,
+        userDetails
+      );
+
+      // Add participant with pending status
+      const participant = {
+        name,
+        phone,
+        skillLevel,
+        paymentStatus: "pending",
+        orderId: order.id,
+        bookingDate: new Date(),
+        amount: totalAmount,
+        quantity,
+      };
+
+      event.participants.push(participant);
+      await event.save({ session });
+
+      await session.commitTransaction();
+      session.endSession();
+
+      res.status(200).json({
+        message: "Booking initiated",
+        orderId: order.id,
+        amount: order.amount,
+        eventName: event.name,
+        eventDate: event.date,
+        venue: event.venueName,
+        customerName: name,
+        customerPhone: phone,
+        skillLevel,
+        quantity,
+        totalAmount,
+        prefill: { name, contact: phone },
       });
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      throw error;
     }
-
-    const totalAmount = event.price * quantity;
-
-    const eventDetails = {
-      name: event.name,
-      date: event.date,
-      venueName: event.venueName,
-      slot: event.slot,
-    };
-
-    const userDetails = { name, phone, skillLevel, quantity };
-
-    const order = await createRazorpayOrder(
-      totalAmount,
-      eventDetails,
-      userDetails
-    );
-
-    // Add participant as pending
-    const participant = {
-      name,
-      phone,
-      skillLevel,
-      paymentStatus: "pending",
-      orderId: order.id,
-      bookingDate: new Date(),
-      amount: totalAmount,
-      quantity,
-    };
-
-    event.participants.push(participant);
-    await event.save();
-
-    res.status(200).json({
-      message: "Booking initiated",
-      orderId: order.id,
-      amount: order.amount,
-      eventName: event.name,
-      eventDate: event.date,
-      venue: event.venueName,
-      customerName: name,
-      customerPhone: phone,
-      skillLevel,
-      quantity,
-      totalAmount,
-      prefill: { name, contact: phone },
-    });
   } catch (error) {
     console.error("Booking Initiation Error:", error);
     res.status(500).json({
@@ -321,6 +345,7 @@ exports.initiateBooking = async (req, res) => {
 exports.handleRazorpayWebhook = async (req, res) => {
   console.log("Webhook received:", req.body);
 
+  // Verify signature
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
   const signature = req.headers["x-razorpay-signature"];
   const body = JSON.stringify(req.body);
@@ -350,55 +375,101 @@ exports.handleRazorpayWebhook = async (req, res) => {
     const amount = payment.amount / 100;
 
     try {
-      const event = await Event.findOne({ "participants.orderId": orderId });
-      if (!event) {
-        console.error("Event not found for orderId:", orderId);
-        return res.status(404).json({ error: "Event not found" });
-      }
+      // Use a session to ensure atomicity
+      const session = await mongoose.startSession();
+      session.startTransaction();
 
-      const participantIndex = event.participants.findIndex(
-        (p) => p.orderId === orderId && p.paymentStatus === "pending"
-      );
+      try {
+        // Find event and lock it for update
+        const event = await Event.findOne({
+          "participants.orderId": orderId,
+        }).session(session);
 
-      if (participantIndex === -1) {
-        console.log(
-          "Participant already processed or not found for orderId:",
-          orderId
-        );
-        return res.status(200).json({ status: "ok" });
-      }
-
-      const participant = event.participants[participantIndex];
-      const successfulParticipants = event.participants.filter(
-        (p) => p.paymentStatus === "success"
-      );
-      const totalBookedSlots = successfulParticipants.reduce(
-        (acc, curr) => acc + curr.quantity,
-        0
-      );
-      const availableSlots = event.participantsLimit - totalBookedSlots;
-
-      if (availableSlots < participant.quantity) {
-        console.error("Not enough slots available for orderId:", orderId);
-        return res.status(400).json({ error: "Not enough slots available" });
-      }
-
-      // Update only specific fields of the participant using $set
-      await Event.updateOne(
-        { _id: event._id, "participants.orderId": orderId },
-        {
-          $set: {
-            "participants.$.paymentStatus": "success",
-            "participants.$.paymentId": paymentId,
-            "participants.$.bookingDate": new Date(),
-            "participants.$.amount": amount,
-          },
-          $inc: { currentParticipants: participant.quantity },
+        if (!event) {
+          console.error("Event not found for orderId:", orderId);
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(404).json({ error: "Event not found" });
         }
-      );
 
-      console.log(`Payment confirmed via webhook for orderId: ${orderId}`);
-      res.status(200).json({ status: "ok" });
+        const participantIndex = event.participants.findIndex(
+          (p) => p.orderId === orderId && p.paymentStatus === "pending"
+        );
+
+        if (participantIndex === -1) {
+          console.log(
+            "Participant already processed or not found for orderId:",
+            orderId
+          );
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(200).json({ status: "ok" });
+        }
+
+        const participant = event.participants[participantIndex];
+
+        // Calculate available slots based only on successful participants
+        const successfulParticipants = event.participants.filter(
+          (p) => p.paymentStatus === "success"
+        );
+
+        const totalBookedSlots = successfulParticipants.reduce(
+          (acc, curr) => acc + curr.quantity,
+          0
+        );
+
+        const availableSlots = event.participantsLimit - totalBookedSlots;
+
+        if (availableSlots < participant.quantity) {
+          console.error("Not enough slots available for orderId:", orderId);
+          // Possibly initiate refund here if payment was completed but slots are full
+
+          // Mark payment as failed in our system due to lack of slots
+          await Event.updateOne(
+            { _id: event._id, "participants.orderId": orderId },
+            {
+              $set: {
+                "participants.$.paymentStatus": "failed",
+              },
+            },
+            { session }
+          );
+
+          await session.commitTransaction();
+          session.endSession();
+
+          // We still return 200 to Razorpay since we handled the webhook correctly
+          return res.status(200).json({
+            status: "ok",
+            note: "Payment processed but booking failed due to insufficient slots",
+          });
+        }
+
+        // Update participant status and increment current participants counter
+        await Event.updateOne(
+          { _id: event._id, "participants.orderId": orderId },
+          {
+            $set: {
+              "participants.$.paymentStatus": "success",
+              "participants.$.paymentId": paymentId,
+              "participants.$.bookingDate": new Date(),
+              "participants.$.amount": amount,
+            },
+            $inc: { currentParticipants: participant.quantity },
+          },
+          { session }
+        );
+
+        await session.commitTransaction();
+        session.endSession();
+
+        console.log(`Payment confirmed via webhook for orderId: ${orderId}`);
+        return res.status(200).json({ status: "ok" });
+      } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
+      }
     } catch (error) {
       console.error("Webhook processing error:", error);
       return res.status(500).json({ error: "Failed to process webhook" });
@@ -425,6 +496,7 @@ exports.handleRazorpayWebhook = async (req, res) => {
     res.status(200).json({ status: "ok" });
   }
 };
+
 exports.uploadEventsFromExcel = async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "Please upload an Excel file" });

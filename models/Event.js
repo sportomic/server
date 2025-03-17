@@ -79,18 +79,24 @@ const eventSchema = new mongoose.Schema({
   },
 });
 
-// Add validation for participants array
+// Update the pre-save validation to only count confirmed participants
 eventSchema.pre("save", function (next) {
-  const totalBooked = this.participants.reduce((sum, p) => sum + p.quantity, 0);
-  if (totalBooked > this.participantsLimit) {
+  const successfulParticipants = this.participants.filter(
+    (p) => p.paymentStatus === "success"
+  );
+  const totalBookedSlots = successfulParticipants.reduce(
+    (sum, p) => sum + p.quantity,
+    0
+  );
+
+  if (totalBookedSlots > this.participantsLimit) {
     const err = new Error(
-      `Total booked slots (${totalBooked}) exceed event limit (${this.participantsLimit})`
+      `Total confirmed bookings (${totalBookedSlots}) exceed event limit (${this.participantsLimit})`
     );
     return next(err);
   }
   next();
 });
-
 // Add index for better query performance
 eventSchema.index({
   sportsName: 1,
