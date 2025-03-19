@@ -21,6 +21,7 @@
     "mongoose": "^8.9.4",
     "multer": "^1.4.5-lts.1",
     "nodemon": "^3.1.9",
+    "raw-body": "^3.0.0",
     "razorpay": "^2.9.5",
     "uuid": "^11.0.5",
     "xlsx": "^0.18.5"
