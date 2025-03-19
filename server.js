@@ -22,7 +22,18 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(cors());
 
-// Capture raw body for webhook endpoint and parse JSON manually
+// Custom middleware to skip bodyParser.json() for webhook route
+app.use((req, res, next) => {
+  if (req.method === "POST" && req.url === "/api/events/webhook/razorpay") {
+    // Skip to route-specific handler without parsing body
+    next();
+  } else {
+    // Apply bodyParser.json() for all other routes
+    bodyParser.json()(req, res, next);
+  }
+});
+
+// Route-specific middleware for webhook to capture raw body
 app.use("/api/events/webhook/razorpay", (req, res, next) => {
   getRawBody(
     req,
@@ -37,8 +48,7 @@ app.use("/api/events/webhook/razorpay", (req, res, next) => {
       }
       req.rawBody = rawBody;
       try {
-        // Manually parse the raw body into req.body for downstream use
-        req.body = JSON.parse(rawBody);
+        req.body = JSON.parse(rawBody); // Parse for downstream use
         next();
       } catch (parseErr) {
         console.error("Error parsing raw body as JSON:", parseErr);
@@ -48,8 +58,7 @@ app.use("/api/events/webhook/razorpay", (req, res, next) => {
   );
 });
 
-// Standard body parsing for all other routes
-app.use(bodyParser.json());
+// Other middleware
 app.use(express.urlencoded({ extended: true }));
 
 // MongoDB Connection
@@ -64,7 +73,7 @@ app.use("/api/admin", authRoutes); // Authentication routes
 app.use("/api/events", eventRoutes); // Event-related routes
 
 // Default Route
-app.get("/", (req, res) => {
+app.get("/", (req, res, next) => {
   res.send("API is running...");
 });
 
