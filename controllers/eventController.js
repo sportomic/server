@@ -280,7 +280,7 @@ exports.initiateBooking = async (req, res) => {
       const totalAmount = event.price * quantity;
 
       const eventDetails = {
-        EventId: event._id,
+        eventId: event._id,
         name: event.name,
         date: event.date,
         venueName: event.venueName,

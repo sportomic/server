@@ -12,6 +12,7 @@ exports.createRazorpayOrder = async (amount, eventDetails, userDetails) => {
     currency: "INR",
     receipt: `receipt_${Date.now()}`,
     notes: {
+      eventId: eventDetails.eventId,
       event_name: eventDetails.name,
       event_date: eventDetails.date,
       event_time: eventDetails.slot,
