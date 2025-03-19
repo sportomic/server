@@ -22,6 +22,7 @@ const PORT = process.env.PORT || 5000;
 // Middleware
 app.use(cors());
 
+// Capture raw body for webhook endpoint and parse JSON manually
 app.use("/api/events/webhook/razorpay", (req, res, next) => {
   getRawBody(
     req,
@@ -35,11 +36,19 @@ app.use("/api/events/webhook/razorpay", (req, res, next) => {
         return res.status(500).json({ error: "Failed to process raw body" });
       }
       req.rawBody = rawBody;
-      next();
+      try {
+        // Manually parse the raw body into req.body for downstream use
+        req.body = JSON.parse(rawBody);
+        next();
+      } catch (parseErr) {
+        console.error("Error parsing raw body as JSON:", parseErr);
+        return res.status(400).json({ error: "Invalid JSON in request body" });
+      }
     }
   );
 });
 
+// Standard body parsing for all other routes
 app.use(bodyParser.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -59,7 +68,7 @@ app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
-// Error Handling Middleware (Optional)
+// Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send({ error: "Something went wrong!" });
