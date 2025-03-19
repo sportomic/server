@@ -20,6 +20,25 @@ const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
+
+app.use("/api/events/webhook/razorpay", (req, res, next) => {
+  getRawBody(
+    req,
+    {
+      length: req.headers["content-length"],
+      encoding: "utf8",
+    },
+    (err, rawBody) => {
+      if (err) {
+        console.error("Error capturing raw body:", err);
+        return res.status(500).json({ error: "Failed to process raw body" });
+      }
+      req.rawBody = rawBody;
+      next();
+    }
+  );
+});
+
 app.use(bodyParser.json());
 app.use(express.urlencoded({ extended: true }));
 
