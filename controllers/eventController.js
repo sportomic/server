@@ -353,6 +353,9 @@ exports.handleRazorpayWebhook = async (req, res) => {
   const signature = req.headers["x-razorpay-signature"];
   const rawBody = req.rawBody; // Requires raw-body middleware
 
+  console.log("Raw body", rawBody);
+  console.log("Webhook secret", secret);
+
   if (!rawBody) {
     console.error("Raw body not available");
     return res.status(500).json({ error: "Raw body not available" });
