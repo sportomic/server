@@ -5,6 +5,7 @@ const dotenv = require("dotenv");
 const connectDB = require("./config/db");
 const fs = require("fs");
 const path = require("path");
+const getRawBody = require("raw-body");
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "uploads");
@@ -48,6 +49,7 @@ connectDB();
 // Routes
 const authRoutes = require("./routes/adminAuthRoutes");
 const eventRoutes = require("./routes/eventRoutes");
+const getRawBody = require("raw-body");
 
 // API Endpoints
 app.use("/api/admin", authRoutes); // Authentication routes
