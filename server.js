@@ -49,7 +49,6 @@ connectDB();
 // Routes
 const authRoutes = require("./routes/adminAuthRoutes");
 const eventRoutes = require("./routes/eventRoutes");
-const getRawBody = require("raw-body");
 
 // API Endpoints
 app.use("/api/admin", authRoutes); // Authentication routes
