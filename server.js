@@ -7,6 +7,8 @@ const fs = require("fs");
 const path = require("path");
 const getRawBody = require("raw-body");
 
+console.log("Vedansh");
+
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) {
