@@ -7,8 +7,6 @@ const fs = require("fs");
 const path = require("path");
 const getRawBody = require("raw-body");
 
-console.log("Vedansh");
-
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadsDir)) {
@@ -69,10 +67,12 @@ connectDB();
 // Routes
 const authRoutes = require("./routes/adminAuthRoutes");
 const eventRoutes = require("./routes/eventRoutes");
+const contactRoutes = require("./routes/contactRoutes");
 
 // API Endpoints
 app.use("/api/admin", authRoutes); // Authentication routes
 app.use("/api/events", eventRoutes); // Event-related routes
+app.use("/api/contact", contactRoutes); // Contact-related routes
 
 // Default Route
 app.get("/", (req, res, next) => {
