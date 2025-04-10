@@ -6,6 +6,11 @@ const connectDB = require("./config/db");
 const fs = require("fs");
 const path = require("path");
 const getRawBody = require("raw-body");
+const {
+  Sentry,
+  initSentry,
+  setupSentryErrorHandler,
+} = require("./utils/sentry");
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "uploads");
@@ -17,7 +22,13 @@ if (!fs.existsSync(uploadsDir)) {
 dotenv.config();
 
 const app = express();
+
+// Initialize Sentry for error tracking
+initSentry();
+
 const PORT = process.env.PORT || 5000;
+
+app.use(Sentry.Handlers.requestHandler()); // Request handler for Sentry
 
 // Middleware
 app.use(cors());
@@ -78,6 +89,13 @@ app.use("/api/contact", contactRoutes); // Contact-related routes
 app.get("/", (req, res, next) => {
   res.send("API is running...");
 });
+
+app.get("/debug-sentry", function mainHandler(req, res) {
+  throw new Error("My first Sentry error!"); // This will be captured by Sentry
+});
+
+//Setup Sentry error handling
+setupSentryErrorHandler(app);
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {

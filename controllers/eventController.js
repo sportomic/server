@@ -9,6 +9,7 @@ const fs = require("fs");
 const axios = require("axios");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
+const { Sentry } = require("../utils/sentry");
 
 exports.downloadEventExcel = async (req, res) => {
   try {
@@ -77,9 +78,18 @@ exports.downloadEventExcel = async (req, res) => {
 };
 
 exports.getAllEvents = async (req, res) => {
+  const transaction = Sentry.startTransaction({
+    op: "get_events",
+    name: "Get All Events",
+  });
+
   try {
     const { sport } = req.query;
     let filter = {};
+
+    Sentry.setContext("query", {
+      sport: sport || "all",
+    });
 
     if (sport && sport.toLowerCase() !== "all") {
       filter.sportsName = sport.toLowerCase();
@@ -100,8 +110,11 @@ exports.getAllEvents = async (req, res) => {
       events: eventsWithSlots,
     });
   } catch (error) {
+    Sentry.captureException(error);
     console.error("Error in getAllEvents:", error);
     res.status(500).json({ error: "Failed to fetch events" });
+  } finally {
+    transaction.finish();
   }
 };
 
@@ -235,30 +248,73 @@ exports.deleteEvent = async (req, res) => {
 };
 
 exports.initiateBooking = async (req, res) => {
+  const transaction = Sentry.startTransaction({
+    op: "booking",
+    name: "Initiate Booking",
+  });
+
   const { id } = req.params;
   const { name, phone, skillLevel, quantity = 1 } = req.body;
 
-  if (!name || !phone || !skillLevel) {
-    return res.status(400).json({
-      error: "Name, phone number, and skill level are required",
-    });
-  }
-
-  if (typeof quantity !== "number" || quantity < 1) {
-    return res.status(400).json({ error: "Invalid quantity" });
-  }
-
   try {
+    // Add request context to Sentry
+    Sentry.setContext("booking_request", {
+      eventId: id,
+      name,
+      phone,
+      skillLevel,
+      quantity,
+    });
+
+    if (!name || !phone || !skillLevel) {
+      Sentry.setContext("validation_error", {
+        missingFields: {
+          name: !name,
+          phone: !phone,
+          skillLevel: !skillLevel,
+        },
+      });
+      return res.status(400).json({
+        error: "Name, phone number, and skill level are required",
+      });
+    }
+
+    if (typeof quantity !== "number" || quantity < 1) {
+      Sentry.setContext("validation_error", {
+        invalidQuantity: quantity,
+      });
+      return res.status(400).json({ error: "Invalid quantity" });
+    }
+
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
+      // Create a child span for database operations
+      const dbSpan = transaction.startChild({
+        op: "db",
+        description: "Find Event and Process Booking",
+      });
+
       const event = await Event.findById(id).session(session);
       if (!event) {
+        Sentry.captureMessage("Event not found during booking", {
+          level: "error",
+          extra: { eventId: id },
+        });
         await session.abortTransaction();
         session.endSession();
+        dbSpan.finish();
         return res.status(404).json({ error: "Event not found" });
       }
+
+      // Add event context to Sentry
+      Sentry.setContext("event_details", {
+        eventId: event._id,
+        eventName: event.name,
+        participantsLimit: event.participantsLimit,
+        currentParticipants: event.currentParticipants,
+      });
 
       const successfulParticipants = event.participants.filter(
         (p) => p.paymentStatus === "success"
@@ -270,14 +326,29 @@ exports.initiateBooking = async (req, res) => {
       const availableSlots = event.participantsLimit - totalBookedSlots;
 
       if (availableSlots < quantity) {
+        Sentry.captureMessage("Insufficient slots available", {
+          level: "warning",
+          extra: {
+            availableSlots,
+            requestedQuantity: quantity,
+            eventId: event._id,
+          },
+        });
         await session.abortTransaction();
         session.endSession();
+        dbSpan.finish();
         return res.status(400).json({
           error: `Only ${availableSlots} slots available`,
         });
       }
 
       const totalAmount = event.price * quantity;
+
+      // Create a child span for Razorpay order creation
+      const razorpaySpan = transaction.startChild({
+        op: "razorpay",
+        description: "Create Razorpay Order",
+      });
 
       const eventDetails = {
         eventId: event._id,
@@ -299,6 +370,13 @@ exports.initiateBooking = async (req, res) => {
         eventDetails,
         userDetails
       );
+      razorpaySpan.finish();
+
+      // Add order context to Sentry
+      Sentry.setContext("order_details", {
+        orderId: order.id,
+        amount: totalAmount,
+      });
 
       const participant = {
         name,
@@ -316,6 +394,7 @@ exports.initiateBooking = async (req, res) => {
 
       await session.commitTransaction();
       session.endSession();
+      dbSpan.finish();
 
       res.status(200).json({
         message: "Booking initiated",
@@ -332,183 +411,205 @@ exports.initiateBooking = async (req, res) => {
         prefill: { name, contact: phone },
       });
     } catch (error) {
+      Sentry.captureException(error);
       await session.abortTransaction();
       session.endSession();
       throw error;
     }
   } catch (error) {
+    Sentry.captureException(error);
     console.error("Booking Initiation Error:", error);
     res.status(500).json({
       error: "Failed to initiate booking",
       details: error.message,
     });
+  } finally {
+    transaction.finish();
   }
 };
 
 exports.handleRazorpayWebhook = async (req, res) => {
-  console.log("Webhook received:", req.body);
+  const transaction = Sentry.startTransaction({
+    op: "webhook",
+    name: "Razorpay Webhook Handler",
+  });
 
-  // Verify signature using raw body
-  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-  const signature = req.headers["x-razorpay-signature"];
-  const rawBody = req.rawBody; // Requires raw-body middleware
-
-  console.log("Raw body", rawBody);
-  console.log("Webhook secret", secret);
-
-  if (!rawBody) {
-    console.error("Raw body not available");
-    return res.status(500).json({ error: "Raw body not available" });
-  }
-
-  const expectedSignature = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody)
-    .digest("hex");
-
-  if (expectedSignature !== signature) {
-    console.error("Invalid webhook signature", {
-      expectedSignature,
-      signature,
+  try {
+    Sentry.setContext("webhook", {
+      event: req.body.event,
+      orderId: req.body.payload?.payment?.entity?.order_id,
     });
-    return res.status(400).json({ error: "Invalid signature" });
-  }
 
-  const eventType = req.body.event;
-  const payload = req.body.payload;
+    console.log("Webhook received:", req.body);
 
-  console.log("Webhook event:", eventType);
+    // Verify signature using raw body
+    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers["x-razorpay-signature"];
+    const rawBody = req.rawBody; // Requires raw-body middleware
 
-  const processPayment = async () => {
-    const payment = payload.payment.entity;
-    const orderId = payment.order_id;
-    const paymentId = payment.id;
-    const amount = payment.amount / 100;
+    console.log("Raw body", rawBody);
+    console.log("Webhook secret", secret);
 
-    const session = await mongoose.startSession();
-    session.startTransaction();
+    if (!rawBody) {
+      console.error("Raw body not available");
+      return res.status(500).json({ error: "Raw body not available" });
+    }
 
-    try {
-      const event = await Event.findOne({
-        "participants.orderId": orderId,
-      }).session(session);
-      if (!event) {
-        console.error("Event not found for orderId:", orderId);
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(404).json({ error: "Event not found" });
-      }
+    const expectedSignature = crypto
+      .createHmac("sha256", secret)
+      .update(rawBody)
+      .digest("hex");
 
-      const participantIndex = event.participants.findIndex(
-        (p) => p.orderId === orderId && p.paymentStatus === "pending"
-      );
+    if (expectedSignature !== signature) {
+      console.error("Invalid webhook signature", {
+        expectedSignature,
+        signature,
+      });
+      return res.status(400).json({ error: "Invalid signature" });
+    }
 
-      if (participantIndex === -1) {
-        console.log(
-          "Participant already processed or not found for orderId:",
-          orderId
+    const eventType = req.body.event;
+    const payload = req.body.payload;
+
+    console.log("Webhook event:", eventType);
+
+    const processPayment = async () => {
+      const payment = payload.payment.entity;
+      const orderId = payment.order_id;
+      const paymentId = payment.id;
+      const amount = payment.amount / 100;
+
+      const session = await mongoose.startSession();
+      session.startTransaction();
+
+      try {
+        const event = await Event.findOne({
+          "participants.orderId": orderId,
+        }).session(session);
+        if (!event) {
+          console.error("Event not found for orderId:", orderId);
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(404).json({ error: "Event not found" });
+        }
+
+        const participantIndex = event.participants.findIndex(
+          (p) => p.orderId === orderId && p.paymentStatus === "pending"
         );
-        await session.abortTransaction();
-        session.endSession();
-        return res.status(200).json({ status: "ok" });
-      }
 
-      const participant = event.participants[participantIndex];
-      const successfulParticipants = event.participants.filter(
-        (p) => p.paymentStatus === "success"
-      );
-      const totalBookedSlots = successfulParticipants.reduce(
-        (acc, curr) => acc + curr.quantity,
-        0
-      );
-      const availableSlots = event.participantsLimit - totalBookedSlots;
+        if (participantIndex === -1) {
+          console.log(
+            "Participant already processed or not found for orderId:",
+            orderId
+          );
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(200).json({ status: "ok" });
+        }
 
-      if (availableSlots < participant.quantity) {
-        console.error("Not enough slots available for orderId:", orderId);
+        const participant = event.participants[participantIndex];
+        const successfulParticipants = event.participants.filter(
+          (p) => p.paymentStatus === "success"
+        );
+        const totalBookedSlots = successfulParticipants.reduce(
+          (acc, curr) => acc + curr.quantity,
+          0
+        );
+        const availableSlots = event.participantsLimit - totalBookedSlots;
+
+        if (availableSlots < participant.quantity) {
+          console.error("Not enough slots available for orderId:", orderId);
+          await Event.updateOne(
+            { _id: event._id, "participants.orderId": orderId },
+            { $set: { "participants.$.paymentStatus": "failed" } },
+            { session }
+          );
+          await session.commitTransaction();
+          session.endSession();
+          return res.status(200).json({
+            status: "ok",
+            note: "Payment processed but booking failed due to insufficient slots",
+          });
+        }
+
         await Event.updateOne(
           { _id: event._id, "participants.orderId": orderId },
-          { $set: { "participants.$.paymentStatus": "failed" } },
+          {
+            $set: {
+              "participants.$.paymentStatus": "success",
+              "participants.$.paymentId": paymentId,
+              "participants.$.bookingDate": new Date(),
+              "participants.$.amount": amount,
+            },
+            $inc: { currentParticipants: participant.quantity },
+          },
           { session }
         );
+
         await session.commitTransaction();
         session.endSession();
-        return res.status(200).json({
-          status: "ok",
-          note: "Payment processed but booking failed due to insufficient slots",
-        });
-      }
 
-      await Event.updateOne(
-        { _id: event._id, "participants.orderId": orderId },
-        {
-          $set: {
-            "participants.$.paymentStatus": "success",
-            "participants.$.paymentId": paymentId,
-            "participants.$.bookingDate": new Date(),
-            "participants.$.amount": amount,
-          },
-          $inc: { currentParticipants: participant.quantity },
-        },
-        { session }
-      );
-
-      await session.commitTransaction();
-      session.endSession();
-
-      console.log(`Payment confirmed via webhook for orderId: ${orderId}`);
-      return res.status(200).json({ status: "ok" });
-    } catch (error) {
-      await session.abortTransaction();
-      session.endSession();
-      throw error;
-    }
-  };
-
-  // Retry logic for transient errors
-  const maxRetries = 3;
-  let attempt = 0;
-  while (attempt < maxRetries) {
-    try {
-      if (
-        eventType === "payment.authorized" ||
-        eventType === "payment.captured"
-      ) {
-        await processPayment();
-        break; // Success, exit loop
-      } else if (eventType === "payment.failed") {
-        const payment = payload.payment.entity;
-        const orderId = payment.order_id;
-        await Event.updateOne(
-          { "participants.orderId": orderId },
-          { $set: { "participants.$.paymentStatus": "failed" } }
-        );
-        console.log(`Payment failed for orderId: ${orderId}`);
+        console.log(`Payment confirmed via webhook for orderId: ${orderId}`);
         return res.status(200).json({ status: "ok" });
-      } else {
-        console.log("Unhandled webhook event:", eventType);
-        return res.status(200).json({ status: "ok" });
+      } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
       }
-    } catch (error) {
-      if (
-        error.code === 112 &&
-        error.errorLabels?.includes("TransientTransactionError")
-      ) {
-        attempt++;
-        console.log(
-          `Write conflict detected, retrying (${attempt}/${maxRetries})...`
-        );
-        if (attempt === maxRetries) {
-          console.error("Max retries reached:", error);
-          return res
-            .status(500)
-            .json({ error: "Failed to process webhook after retries" });
+    };
+
+    // Retry logic for transient errors
+    const maxRetries = 3;
+    let attempt = 0;
+    while (attempt < maxRetries) {
+      try {
+        if (
+          eventType === "payment.authorized" ||
+          eventType === "payment.captured"
+        ) {
+          await processPayment();
+          break; // Success, exit loop
+        } else if (eventType === "payment.failed") {
+          const payment = payload.payment.entity;
+          const orderId = payment.order_id;
+          await Event.updateOne(
+            { "participants.orderId": orderId },
+            { $set: { "participants.$.paymentStatus": "failed" } }
+          );
+          console.log(`Payment failed for orderId: ${orderId}`);
+          return res.status(200).json({ status: "ok" });
+        } else {
+          console.log("Unhandled webhook event:", eventType);
+          return res.status(200).json({ status: "ok" });
         }
-        await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
-      } else {
-        console.error("Webhook processing error:", error);
-        return res.status(500).json({ error: "Failed to process webhook" });
+      } catch (error) {
+        if (
+          error.code === 112 &&
+          error.errorLabels?.includes("TransientTransactionError")
+        ) {
+          attempt++;
+          console.log(
+            `Write conflict detected, retrying (${attempt}/${maxRetries})...`
+          );
+          if (attempt === maxRetries) {
+            console.error("Max retries reached:", error);
+            return res
+              .status(500)
+              .json({ error: "Failed to process webhook after retries" });
+          }
+          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+        } else {
+          console.error("Webhook processing error:", error);
+          return res.status(500).json({ error: "Failed to process webhook" });
+        }
       }
     }
+  } catch (error) {
+    Sentry.captureException(error);
+    console.error("Webhook processing error:", error);
+    res.status(500).json({ error: "Failed to process webhook" });
+  } finally {
+    transaction.finish();
   }
 };
 
