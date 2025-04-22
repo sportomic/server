@@ -39,9 +39,10 @@ exports.createPayuPaymentRequest = async (
     furl: payuConfig.failureUrl,
     udf1: userDetails.skillLevel,
     udf2: userDetails.quantity.toString(),
-    udf3: eventDetails.eventId.toString(), // Add eventId for redirect handling
+    udf3: eventDetails.eventId.toString(),
   };
 
+  // Correct hash string with 6 pipe separators after udf3
   const hashString = `${payuConfig.merchantKey}|${paymentData.txnid}|${paymentData.amount}|${paymentData.productinfo}|${paymentData.firstname}|${paymentData.email}|${paymentData.udf1}|${paymentData.udf2}|${paymentData.udf3}||||||${payuConfig.merchantSalt}`;
   const hash = crypto.createHash("sha512").update(hashString).digest("hex");
   paymentData.hash = hash;
