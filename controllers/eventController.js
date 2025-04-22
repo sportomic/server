@@ -9,6 +9,11 @@ const fs = require("fs");
 const axios = require("axios");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
+const {
+  createPayuPaymentRequest,
+  processPayuWebhook,
+  verifyPayuPayment,
+} = require("../utils/payu");
 // Removed: const Sentry = require("@sentry/node");
 
 exports.downloadEventExcel = async (req, res) => {
@@ -303,7 +308,7 @@ exports.initiateBooking = async (req, res) => {
         email: email || `${phone}@example.com`, // PayU requires email
       };
 
-      const order = await createRazorpayOrder(
+      const payuRequest = await createPayuPaymentRequest(
         totalAmount,
         eventDetails,
         userDetails
@@ -314,7 +319,7 @@ exports.initiateBooking = async (req, res) => {
         phone,
         skillLevel,
         paymentStatus: "pending",
-        orderId: order.id,
+        orderId: payuRequest.txnId,
         bookingDate: new Date(),
         amount: totalAmount,
         quantity,
@@ -350,7 +355,6 @@ exports.initiateBooking = async (req, res) => {
         skillLevel,
         quantity,
         totalAmount,
-        prefill: { name, contact: phone },
       });
     } catch (error) {
       await session.abortTransaction();
@@ -424,7 +428,7 @@ exports.handlePayuWebhook = async (req, res) => {
         if (availableSlots < participant.quantity) {
           console.error(`Insufficient slots for txnId: ${txnId}`);
           await Event.updateOne(
-            { _id: event._id, "participants.orderId": orderId },
+            { _id: event._id, "participants.orderId": txnId },
             { $set: { "participants.$.paymentStatus": "failed" } },
             { session }
           );
@@ -437,7 +441,7 @@ exports.handlePayuWebhook = async (req, res) => {
         }
 
         await Event.updateOne(
-          { _id: event._id, "participants.orderId": orderId },
+          { _id: event._id, "participants.orderId": txnId },
           {
             $set: {
               "participants.$.paymentStatus": "success",
