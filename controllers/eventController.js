@@ -1,8 +1,9 @@
 const Event = require("../models/Event");
 const {
-  createRazorpayOrder,
-  verifyRazorpayPayment,
-} = require("../utils/razorpay");
+  createPayuPaymentRequest,
+  verifyPayuPayment,
+  processPayuWebhook,
+} = require("../utils/payu");
 const Excel = require("exceljs");
 const XLSX = require("xlsx");
 const fs = require("fs");
@@ -344,10 +345,10 @@ exports.initiateBooking = async (req, res) => {
 
       const totalAmount = event.price * quantity;
 
-      // Create a child span for Razorpay order creation
-      const razorpaySpan = transaction.startChild({
-        op: "razorpay",
-        description: "Create Razorpay Order",
+      // Create a child span for PayU payment request creation
+      const payuSpan = transaction.startChild({
+        op: "payu",
+        description: "Create PayU Payment Request",
       });
 
       const eventDetails = {
@@ -363,18 +364,19 @@ exports.initiateBooking = async (req, res) => {
         phone,
         skillLevel,
         quantity,
+        email: req.body.email || `${phone}@example.com`, // PayU requires email
       };
 
-      const order = await createRazorpayOrder(
+      const payuRequest = await createPayuPaymentRequest(
         totalAmount,
         eventDetails,
         userDetails
       );
-      razorpaySpan.finish();
+      payuSpan.finish();
 
       // Add order context to Sentry
       Sentry.setContext("order_details", {
-        orderId: order.id,
+        txnId: payuRequest.txnId,
         amount: totalAmount,
       });
 
@@ -383,7 +385,7 @@ exports.initiateBooking = async (req, res) => {
         phone,
         skillLevel,
         paymentStatus: "pending",
-        orderId: order.id,
+        orderId: payuRequest.txnId,
         bookingDate: new Date(),
         amount: totalAmount,
         quantity,
@@ -398,8 +400,10 @@ exports.initiateBooking = async (req, res) => {
 
       res.status(200).json({
         message: "Booking initiated",
-        orderId: order.id,
-        amount: order.amount,
+        txnId: payuRequest.txnId,
+        amount: totalAmount,
+        paymentUrl: payuRequest.payuUrl,
+        paymentData: payuRequest.paymentData,
         eventName: event.name,
         eventDate: event.date,
         venue: event.venueName,
@@ -408,7 +412,6 @@ exports.initiateBooking = async (req, res) => {
         skillLevel,
         quantity,
         totalAmount,
-        prefill: { name, contact: phone },
       });
     } catch (error) {
       Sentry.captureException(error);
@@ -428,86 +431,64 @@ exports.initiateBooking = async (req, res) => {
   }
 };
 
-exports.handleRazorpayWebhook = async (req, res) => {
+// Replace Razorpay webhook handler with PayU webhook handler
+exports.handlePayuWebhook = async (req, res) => {
   const transaction = Sentry.startTransaction({
     op: "webhook",
-    name: "Razorpay Webhook Handler",
+    name: "PayU Webhook Handler",
   });
 
   try {
     Sentry.setContext("webhook", {
-      event: req.body.event,
-      orderId: req.body.payload?.payment?.entity?.order_id,
+      txnId: req.body.txnid,
+      status: req.body.status,
     });
 
-    console.log("Webhook received:", req.body);
+    console.log("PayU Webhook received:", req.body);
 
-    // Verify signature using raw body
-    const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
-    const signature = req.headers["x-razorpay-signature"];
-    const rawBody = req.rawBody; // Requires raw-body middleware
-
-    console.log("Raw body", rawBody);
-    console.log("Webhook secret", secret);
-
-    if (!rawBody) {
-      console.error("Raw body not available");
-      return res.status(500).json({ error: "Raw body not available" });
+    // Process the webhook data
+    let paymentData;
+    try {
+      paymentData = processPayuWebhook(req.body);
+    } catch (error) {
+      console.error("Error processing PayU webhook:", error);
+      return res.status(400).json({ error: "Invalid webhook data" });
     }
 
-    const expectedSignature = crypto
-      .createHmac("sha256", secret)
-      .update(rawBody)
-      .digest("hex");
+    const { txnId, paymentId, status, amount } = paymentData;
 
-    if (expectedSignature !== signature) {
-      console.error("Invalid webhook signature", {
-        expectedSignature,
-        signature,
-      });
-      return res.status(400).json({ error: "Invalid signature" });
-    }
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    const eventType = req.body.event;
-    const payload = req.body.payload;
+    try {
+      const event = await Event.findOne({
+        "participants.orderId": txnId,
+      }).session(session);
+      
+      if (!event) {
+        console.error("Event not found for txnId:", txnId);
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(404).json({ error: "Event not found" });
+      }
 
-    console.log("Webhook event:", eventType);
+      const participantIndex = event.participants.findIndex(
+        (p) => p.orderId === txnId && p.paymentStatus === "pending"
+      );
 
-    const processPayment = async () => {
-      const payment = payload.payment.entity;
-      const orderId = payment.order_id;
-      const paymentId = payment.id;
-      const amount = payment.amount / 100;
-
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
-      try {
-        const event = await Event.findOne({
-          "participants.orderId": orderId,
-        }).session(session);
-        if (!event) {
-          console.error("Event not found for orderId:", orderId);
-          await session.abortTransaction();
-          session.endSession();
-          return res.status(404).json({ error: "Event not found" });
-        }
-
-        const participantIndex = event.participants.findIndex(
-          (p) => p.orderId === orderId && p.paymentStatus === "pending"
+      if (participantIndex === -1) {
+        console.log(
+          "Participant already processed or not found for txnId:",
+          txnId
         );
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(200).json({ status: "ok" });
+      }
 
-        if (participantIndex === -1) {
-          console.log(
-            "Participant already processed or not found for orderId:",
-            orderId
-          );
-          await session.abortTransaction();
-          session.endSession();
-          return res.status(200).json({ status: "ok" });
-        }
-
-        const participant = event.participants[participantIndex];
+      const participant = event.participants[participantIndex];
+      
+      if (status === "success") {
         const successfulParticipants = event.participants.filter(
           (p) => p.paymentStatus === "success"
         );
@@ -518,9 +499,9 @@ exports.handleRazorpayWebhook = async (req, res) => {
         const availableSlots = event.participantsLimit - totalBookedSlots;
 
         if (availableSlots < participant.quantity) {
-          console.error("Not enough slots available for orderId:", orderId);
+          console.error("Not enough slots available for txnId:", txnId);
           await Event.updateOne(
-            { _id: event._id, "participants.orderId": orderId },
+            { _id: event._id, "participants.orderId": txnId },
             { $set: { "participants.$.paymentStatus": "failed" } },
             { session }
           );
@@ -533,7 +514,7 @@ exports.handleRazorpayWebhook = async (req, res) => {
         }
 
         await Event.updateOne(
-          { _id: event._id, "participants.orderId": orderId },
+          { _id: event._id, "participants.orderId": txnId },
           {
             $set: {
               "participants.$.paymentStatus": "success",
@@ -545,64 +526,23 @@ exports.handleRazorpayWebhook = async (req, res) => {
           },
           { session }
         );
-
-        await session.commitTransaction();
-        session.endSession();
-
-        console.log(`Payment confirmed via webhook for orderId: ${orderId}`);
-        return res.status(200).json({ status: "ok" });
-      } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
+      } else {
+        await Event.updateOne(
+          { _id: event._id, "participants.orderId": txnId },
+          { $set: { "participants.$.paymentStatus": "failed" } },
+          { session }
+        );
       }
-    };
 
-    // Retry logic for transient errors
-    const maxRetries = 3;
-    let attempt = 0;
-    while (attempt < maxRetries) {
-      try {
-        if (
-          eventType === "payment.authorized" ||
-          eventType === "payment.captured"
-        ) {
-          await processPayment();
-          break; // Success, exit loop
-        } else if (eventType === "payment.failed") {
-          const payment = payload.payment.entity;
-          const orderId = payment.order_id;
-          await Event.updateOne(
-            { "participants.orderId": orderId },
-            { $set: { "participants.$.paymentStatus": "failed" } }
-          );
-          console.log(`Payment failed for orderId: ${orderId}`);
-          return res.status(200).json({ status: "ok" });
-        } else {
-          console.log("Unhandled webhook event:", eventType);
-          return res.status(200).json({ status: "ok" });
-        }
-      } catch (error) {
-        if (
-          error.code === 112 &&
-          error.errorLabels?.includes("TransientTransactionError")
-        ) {
-          attempt++;
-          console.log(
-            `Write conflict detected, retrying (${attempt}/${maxRetries})...`
-          );
-          if (attempt === maxRetries) {
-            console.error("Max retries reached:", error);
-            return res
-              .status(500)
-              .json({ error: "Failed to process webhook after retries" });
-          }
-          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
-        } else {
-          console.error("Webhook processing error:", error);
-          return res.status(500).json({ error: "Failed to process webhook" });
-        }
-      }
+      await session.commitTransaction();
+      session.endSession();
+
+      console.log(`Payment ${status} via webhook for txnId: ${txnId}`);
+      return res.status(200).json({ status: "ok" });
+    } catch (error) {
+      await session.abortTransaction();
+      session.endSession();
+      throw error;
     }
   } catch (error) {
     Sentry.captureException(error);
