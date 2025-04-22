@@ -10,7 +10,7 @@ const fs = require("fs");
 const axios = require("axios");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
-const { Sentry } = require("../utils/sentry");
+const Sentry = require("@sentry/node");
 
 exports.downloadEventExcel = async (req, res) => {
   try {

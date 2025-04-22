@@ -1,3 +1,4 @@
+require("./instrument");
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
@@ -6,8 +7,7 @@ const connectDB = require("./config/db");
 const fs = require("fs");
 const path = require("path");
 const getRawBody = require("raw-body");
-const Sentry = require("./instrument.js");
-const { expressIntegration } = require("@sentry/node");
+const Sentry = require("@sentry/node");
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "Uploads");
@@ -21,15 +21,10 @@ dotenv.config();
 const app = express();
 
 // Add Express integration to Sentry
-Sentry.addIntegration(expressIntegration({ app }));
+//Sentry.addIntegration(expressIntegration({ app }));
 
 // The request handler must be the first middleware on the app
-console.log(Sentry);
-app.use(Sentry.Handlers.requestHandler());
-
-// Tracing handler for performance monitoring
-app.use(Sentry.Handlers.tracingHandler());
-
+Sentry.setupExpressErrorHandler(app);
 // Middleware
 app.use(cors());
 
@@ -100,9 +95,6 @@ app.get("/", (req, res) => {
 app.get("/debug-sentry", function mainHandler(req, res) {
   throw new Error("My first Sentry error!");
 });
-
-// The error handler must be after all controllers
-app.use(Sentry.Handlers.errorHandler());
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
