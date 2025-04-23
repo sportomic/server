@@ -273,6 +273,8 @@ exports.initiateBooking = async (req, res) => {
         return res.status(404).json({ error: "Event not found" });
       }
 
+      console.log("Fetched event:", event); // Debug log
+
       const successfulParticipants = event.participants.filter(
         (p) => p.paymentStatus === "success"
       );
@@ -293,12 +295,14 @@ exports.initiateBooking = async (req, res) => {
       const totalAmount = event.price * quantity;
 
       const eventDetails = {
-        eventId: event._id,
+        eventId: event._id.toString(), // Ensure ObjectId is converted to string
         name: event.name,
         date: event.date,
         venueName: event.venueName,
         slot: event.slot,
       };
+
+      console.log("Constructed eventDetails:", eventDetails); // Debug log
 
       const userDetails = {
         name,
