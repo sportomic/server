@@ -2,13 +2,15 @@ const crypto = require("crypto");
 
 // PayU configuration
 const payuConfig = {
-  merchantKey: process.env.PAYU_MERCHANT_KEY,
-  merchantSalt: process.env.PAYU_MERCHANT_SALT,
-  baseUrl: process.env.PAYU_BASE_URL || "https://secure.payu.in",
+  merchantKey: "cApKQ0",
+  merchantSalt: "s9QCUBnBP3BsBQdAuhEsF8b1TXSzJsQa",
+  baseUrl: process.env.PAYU_BASE_URL || "https://test.payu.in",
   successUrl:
-    process.env.PAYU_SUCCESS_URL || "http://localhost:3000/api/payu/success",
+    process.env.PAYU_SUCCESS_URL ||
+    "http://localhost:5000/api/events/payu/success",
   failureUrl:
-    process.env.PAYU_FAILURE_URL || "http://localhost:3000/api/payu/failure",
+    process.env.PAYU_FAILURE_URL ||
+    "http://localhost:5000/api/events/payu/failure",
 };
 
 // Log PayU configuration (including salt for debugging)
@@ -20,7 +22,11 @@ console.log("PayU Configuration:", {
   failureUrl: payuConfig.failureUrl,
 });
 
-exports.createPayuPaymentRequest = async (amount, eventDetails, userDetails) => {
+exports.createPayuPaymentRequest = async (
+  amount,
+  eventDetails,
+  userDetails
+) => {
   console.log("Creating PayU payment request with inputs:", {
     amount,
     eventDetails,
@@ -33,9 +39,12 @@ exports.createPayuPaymentRequest = async (amount, eventDetails, userDetails) => 
   // Log eventDetails.eventId to debug
   console.log("eventDetails.eventId:", eventDetails.eventId);
 
-  // Simplify productinfo to a short string
-  const productInfo = `${eventDetails.name} (${eventDetails.slot})`;
-  console.log("Product info:", productInfo);
+  // Simplify productinfo to avoid spaces and special characters
+  const productInfo = `${eventDetails.name}_${eventDetails.slot}`
+    .replace(/[^a-zA-Z0-9]/g, "_")
+    .replace(/_+/g, "_")
+    .trim();
+  console.log("Simplified product info:", productInfo);
 
   const paymentData = {
     key: payuConfig.merchantKey,
@@ -49,24 +58,46 @@ exports.createPayuPaymentRequest = async (amount, eventDetails, userDetails) => 
     furl: payuConfig.failureUrl,
     udf1: userDetails.skillLevel || "",
     udf2: userDetails.quantity.toString() || "",
-    udf3: eventDetails.eventId ? eventDetails.eventId.toString() : "",
+    udf3: eventDetails.eventId, //"undefined", // Temporarily set to "undefined" to match PayU's expectation
     udf4: "",
     udf5: "",
   };
 
   // Sanitize fields to remove pipe characters and trim whitespace
-  Object.keys(paymentData).forEach(key => {
-    if (typeof paymentData[key] === 'string') {
-      paymentData[key] = paymentData[key].replace(/\|/g, '').trim();
+  Object.keys(paymentData).forEach((key) => {
+    if (typeof paymentData[key] === "string") {
+      paymentData[key] = paymentData[key].replace(/\|/g, "").trim();
     }
   });
 
   // Generate hash string exactly matching PayU's format
-  const hashString = `${payuConfig.merchantKey}|${paymentData.txnid}|${paymentData.amount}|${paymentData.productinfo}|${paymentData.firstname}|${paymentData.email}|${paymentData.udf1}|${paymentData.udf2}|${paymentData.udf3}|${paymentData.udf4}|${paymentData.udf5}||||||${payuConfig.merchantSalt}`;
+  const hashString = [
+    payuConfig.merchantKey,
+    paymentData.txnid,
+    paymentData.amount,
+    paymentData.productinfo,
+    paymentData.firstname,
+    paymentData.email,
+    paymentData.udf1 || "",
+    paymentData.udf2 || "",
+    paymentData.udf3 || "",
+    paymentData.udf4 || "",
+    paymentData.udf5 || "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    payuConfig.merchantSalt,
+  ].join("|");
+
+  console.log("Hash string for calculation:", hashString);
 
   // Calculate hash using SHA512
   const hash = crypto.createHash("sha512").update(hashString).digest("hex");
   paymentData.hash = hash;
+
+  console.log("Generated hash:", hash);
 
   const response = {
     paymentData,
@@ -94,6 +125,7 @@ exports.verifyPayuPayment = (payuResponse) => {
     udf4,
     udf5,
     hash,
+    additionalCharges,
   } = payuResponse;
 
   if (
@@ -117,29 +149,29 @@ exports.verifyPayuPayment = (payuResponse) => {
     throw new Error("Missing required fields for hash verification");
   }
 
-  const hashString = `${payuConfig.merchantSalt}|${status}|||||${udf5 || ""}|${
-    udf4 || ""
-  }|${udf3 || ""}|${udf2 || ""}|${
-    udf1 || ""
-  }|${email}|${firstname}|${productinfo}|${amount}|${txnid}|${
-    payuConfig.merchantKey
-  }`;
-  console.log("Hash string components for verification:", {
-    salt: payuConfig.merchantSalt,
+  // The correct order for PayU response verification hash
+  const hashString = [
+    payuConfig.merchantSalt,
     status,
-    udf5: udf5 || "",
-    udf4: udf4 || "",
-    udf3: udf3 || "",
-    udf2: udf2 || "",
-    udf1: udf1 || "",
+    "", // empty
+    "", // empty
+    "", // empty
+    "", // empty
+    "", // empty
+    udf5 || "",
+    udf4 || "",
+    udf3 || "",
+    udf2 || "",
+    udf1 || "",
     email,
     firstname,
-    productinfo,
+    productinfo, // Note: Use original productinfo without cleaning
     amount,
     txnid,
-    key: payuConfig.merchantKey,
-  });
-  console.log("Hash string for verification:", hashString);
+    payuConfig.merchantKey,
+  ].join("|");
+
+  console.log("Correct hash string for verification:", hashString);
 
   const calculatedHash = crypto
     .createHash("sha512")
@@ -148,10 +180,9 @@ exports.verifyPayuPayment = (payuResponse) => {
   console.log("Calculated hash for verification:", calculatedHash);
   console.log("Received hash from PayU:", hash);
 
-  if (calculatedHash !== hash) {
-    console.error(
-      "Hash verification failed: Calculated hash does not match received hash"
-    );
+  // Compare hashes (case-insensitive as some gateways may send lowercase)
+  if (calculatedHash.toLowerCase() !== hash.toLowerCase()) {
+    console.error("Hash verification failed");
     return false;
   }
 

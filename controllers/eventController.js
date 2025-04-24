@@ -1,8 +1,8 @@
 const Event = require("../models/Event");
-const {
-  createRazorpayOrder,
-  verifyRazorpayPayment,
-} = require("../utils/razorpay");
+// const {
+//   createRazorpayOrder,
+//   verifyRazorpayPayment,
+// } = require("../utils/razorpay");
 const Excel = require("exceljs");
 const XLSX = require("xlsx");
 const fs = require("fs");
@@ -243,6 +243,7 @@ exports.deleteEvent = async (req, res) => {
   }
 };
 
+//payU paymnet logic
 exports.initiateBooking = async (req, res) => {
   const { id } = req.params;
   const { name, phone, skillLevel, quantity = 1, email } = req.body;
@@ -267,6 +268,8 @@ exports.initiateBooking = async (req, res) => {
 
     try {
       const event = await Event.findById(id).session(session);
+
+      console.log("Fetched event:", event); // Debug log
       if (!event) {
         await session.abortTransaction();
         session.endSession();
@@ -293,23 +296,24 @@ exports.initiateBooking = async (req, res) => {
       }
 
       const totalAmount = event.price * quantity;
-
+      const eventId = event?._id.toString();
+      console.log("Event ID:", eventId); // Debug log
       const eventDetails = {
-        eventId: event._id.toString(), // Ensure ObjectId is converted to string
-        name: event.name,
-        date: event.date,
-        venueName: event.venueName,
-        slot: event.slot,
+        eventId: eventId || "",
+        name: event.name || "Unknown Event",
+        date: event.date || new Date(),
+        venueName: event.venueName || "Unknown Venue",
+        slot: event.slot || "Unknown Slot",
       };
 
       console.log("Constructed eventDetails:", eventDetails); // Debug log
 
       const userDetails = {
-        name,
-        phone,
-        skillLevel,
+        name: name ? name.trim() : "Unknown",
+        phone: phone ? phone.trim() : "0000000000",
+        skillLevel: skillLevel ? skillLevel.trim() : "",
         quantity,
-        email: email || `${phone}@example.com`, // PayU requires email
+        email: email ? email.trim() : `${phone}@example.com`, // Ensure email is valid
       };
 
       const payuRequest = await createPayuPaymentRequest(
@@ -317,6 +321,7 @@ exports.initiateBooking = async (req, res) => {
         eventDetails,
         userDetails
       );
+      console.log("PayU request sent:", payuRequest.paymentData); // Debug log
 
       const participant = {
         name,
@@ -351,6 +356,7 @@ exports.initiateBooking = async (req, res) => {
         hash: payuRequest.paymentData.hash,
         udf1: payuRequest.paymentData.udf1,
         udf2: payuRequest.paymentData.udf2,
+        udf3: payuRequest.paymentData.udf3,
         eventName: event.name,
         eventDate: event.date,
         venue: event.venueName,
@@ -490,6 +496,119 @@ exports.handlePayuWebhook = async (req, res) => {
   }
 };
 
+exports.handlePayuSuccess = async (req, res) => {
+  try {
+    // Log the full response for debugging
+    console.log("PayU Success Response:", req.body);
+
+    // Verify the payment response first
+    const isValid = verifyPayuPayment(req.body);
+    if (!isValid) {
+      console.error(
+        "Invalid hash in PayU success redirect. TXN ID:",
+        req.body.txnid,
+        "Details:",
+        req.body
+      );
+      return res.redirect("/payment/failure?reason=hash_verification_failed");
+    }
+
+    // Check payment status
+    if (req.body.status.toLowerCase() !== "success") {
+      console.error(
+        "Payment not successful. Status:",
+        req.body.status,
+        "TXN ID:",
+        req.body.txnid
+      );
+      return res.redirect("/payment/failure?reason=payment_not_successful");
+    }
+
+    // Extract event ID - improved handling
+    const eventId =
+      req.body.udf1 && req.body.udf1 !== "undefined"
+        ? req.body.udf3.trim()
+        : null;
+
+    if (!eventId) {
+      console.error(
+        "Missing or invalid eventId in success redirect. TXN ID:",
+        req.body.txnid,
+        "UDF Fields:",
+        {
+          udf1: req.body.udf1,
+          udf2: req.body.udf2,
+          udf3: req.body.udf3,
+          udf4: req.body.udf4,
+          udf5: req.body.udf5,
+        }
+      );
+      return res.redirect("/payment/failure?reason=invalid_event_reference");
+    }
+
+    // TODO: Consider adding database update here to mark payment as successful
+    // await updatePaymentStatus(req.body.txnid, 'success', eventId);
+
+    // Redirect with both success status and transaction ID
+    return res.redirect(
+      `http://localhost:5173/event/${eventId}?payment=success&txnid=${encodeURIComponent(
+        req.body.txnid
+      )}`
+    );
+  } catch (error) {
+    console.error(
+      "Unexpected error in PayU success handler:",
+      error.message,
+      "Stack:",
+      error.stack
+    );
+    return res.redirect("/payment/failure?reason=server_error");
+  }
+};
+
+exports.handlePayuFailure = async (req, res) => {
+  try {
+    // Log detailed failure information
+    console.log("PayU Payment Failed. Details:", {
+      txnid: req.body.txnid,
+      status: req.body.status,
+      error: req.body.error_Message,
+      allFields: req.body,
+    });
+
+    // Extract event ID if available to redirect back to specific event
+    const eventId =
+      req.body.udf1 && req.body.udf1 !== "undefined"
+        ? req.body.udf3.trim()
+        : null;
+
+    // TODO: Consider adding database update here to mark payment as failed
+    // if (req.body.txnid) await updatePaymentStatus(req.body.txnid, 'failed');
+
+    // Redirect logic with more context
+    const redirectUrl = eventId
+      ? `http://localhost:5173/event/${eventId}?payment=failed&reason=${encodeURIComponent(
+          req.body.error_Message || "payment_failed"
+        )}`
+      : `http://localhost:5173/?payment=failed&reason=${encodeURIComponent(
+          req.body.error_Message || "payment_failed"
+        )}`;
+
+    return res.redirect(redirectUrl);
+  } catch (error) {
+    console.error(
+      "Unexpected error in PayU failure handler:",
+      error.message,
+      "Stack:",
+      error.stack
+    );
+    return res.redirect(
+      "http://localhost:5173/?payment=failed&reason=handler_error"
+    );
+  }
+};
+
+//bulk upload events
 exports.uploadEventsFromExcel = async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ message: "Please upload an Excel file" });
@@ -553,6 +672,8 @@ exports.uploadEventsFromExcel = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+//msg91 functions
 
 const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
 const MSG91_API_URL = process.env.MSG91_API_URL;
@@ -723,35 +844,5 @@ exports.sendCancellation = async (req, res) => {
       error.response ? error.response.data : error.message
     );
     res.status(500).json({ error: "Failed to send cancellation messages" });
-  }
-};
-
-exports.handlePayuSuccess = async (req, res) => {
-  try {
-    const isValid = verifyPayuPayment(req.body);
-    if (!isValid) {
-      console.error("Invalid hash in PayU success redirect:", req.body.txnid);
-      return res.redirect("/payment/failure");
-    }
-
-    if (req.body.status === "success") {
-      const eventId = req.body.udf3; // Retrieve eventId from udf3
-      return res.redirect(`/event/${eventId}?payment=success`);
-    } else {
-      return res.redirect("/payment/failure");
-    }
-  } catch (error) {
-    console.error("Error in PayU success redirect:", error.message);
-    return res.redirect("/payment/failure");
-  }
-};
-
-exports.handlePayuFailure = async (req, res) => {
-  try {
-    console.log("PayU payment failed:", req.body);
-    return res.redirect("/payment/failure");
-  } catch (error) {
-    console.error("Error in PayU failure redirect:", error.message);
-    return res.redirect("/payment/failure");
   }
 };
