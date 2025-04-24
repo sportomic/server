@@ -42,34 +42,29 @@ app.use((req, res, next) => {
 });
 
 // Route-specific middleware for webhooks to capture raw body
-app.use(
-  ["/api/events/webhook/razorpay", "/api/events/webhook/payu"],
-  (req, res, next) => {
-    getRawBody(
-      req,
-      {
-        length: req.headers["content-length"],
-        encoding: "utf8",
-      },
-      (err, rawBody) => {
-        if (err) {
-          console.error("Error capturing raw body:", err);
-          return res.status(500).json({ error: "Failed to process raw body" });
-        }
-        req.rawBody = rawBody;
-        try {
-          req.body = JSON.parse(rawBody);
-          next();
-        } catch (parseErr) {
-          console.error("Error parsing raw body as JSON:", parseErr);
-          return res
-            .status(400)
-            .json({ error: "Invalid JSON in request body" });
-        }
+app.use("/api/events/webhook/payu", (req, res, next) => {
+  getRawBody(
+    req,
+    {
+      length: req.headers["content-length"],
+      encoding: "utf8",
+    },
+    (err, rawBody) => {
+      if (err) {
+        console.error("Error capturing raw body:", err);
+        return res.status(500).json({ error: "Failed to process raw body" });
       }
-    );
-  }
-);
+      req.rawBody = rawBody;
+      try {
+        req.body = JSON.parse(rawBody);
+        next();
+      } catch (parseErr) {
+        console.error("Error parsing raw body as JSON:", parseErr);
+        return res.status(400).json({ error: "Invalid JSON in request body" });
+      }
+    }
+  );
+});
 
 // Other middleware
 app.use(express.urlencoded({ extended: true }));
