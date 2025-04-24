@@ -30,7 +30,7 @@ app.get("/api/events/webhook/payu", (req, res, next) => {
 
   req.on("end", () => {
     try {
-      console.log(req.originalUrl);
+      console.log("Original Url:- ", req.originalUrl);
       console.log(req.url);
       console.log(req.query);
       console.log(req.body);
