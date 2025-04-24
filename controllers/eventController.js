@@ -546,11 +546,9 @@ exports.handlePayuSuccess = async (req, res) => {
       return res.redirect("/payment/failure?reason=invalid_event_reference");
     }
 
-    // Redirect with both success status and transaction ID
+    // Redirect to the event page without query parameters
     return res.redirect(
-      `https://client-env-staging-sportomic.vercel.app/event/${eventId}?payment=success&txnid=${encodeURIComponent(
-        req.body.txnid
-      )}`
+      `https://client-env-staging-sportomic.vercel.app/event/${eventId}`
     );
   } catch (error) {
     console.error(
@@ -579,14 +577,10 @@ exports.handlePayuFailure = async (req, res) => {
         ? req.body.udf3.trim()
         : null;
 
-    // Redirect logic with more context
+    // Redirect to the event page without query parameters
     const redirectUrl = eventId
-      ? `https://client-env-staging-sportomic.vercel.app/event/${eventId}?payment=failed&reason=${encodeURIComponent(
-          req.body.error_Message || "payment_failed"
-        )}`
-      : `https://client-env-staging-sportomic.vercel.app/?payment=failed&reason=${encodeURIComponent(
-          req.body.error_Message || "payment_failed"
-        )}`;
+      ? `https://client-env-staging-sportomic.vercel.app/event/${eventId}`
+      : `https://client-env-staging-sportomic.vercel.app/`;
 
     return res.redirect(redirectUrl);
   } catch (error) {
@@ -597,7 +591,7 @@ exports.handlePayuFailure = async (req, res) => {
       error.stack
     );
     return res.redirect(
-      "https://client-env-staging-sportomic.vercel.app/?payment=failed&reason=handler_error"
+      "https://client-env-staging-sportomic.vercel.app/"
     );
   }
 };
