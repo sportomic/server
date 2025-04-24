@@ -546,12 +546,9 @@ exports.handlePayuSuccess = async (req, res) => {
       return res.redirect("/payment/failure?reason=invalid_event_reference");
     }
 
-    // TODO: Consider adding database update here to mark payment as successful
-    // await updatePaymentStatus(req.body.txnid, 'success', eventId);
-
     // Redirect with both success status and transaction ID
     return res.redirect(
-      `http://localhost:5173/event/${eventId}?payment=success&txnid=${encodeURIComponent(
+      `https://client-env-staging-sportomic.vercel.app/event/${eventId}?payment=success&txnid=${encodeURIComponent(
         req.body.txnid
       )}`
     );
@@ -582,15 +579,12 @@ exports.handlePayuFailure = async (req, res) => {
         ? req.body.udf3.trim()
         : null;
 
-    // TODO: Consider adding database update here to mark payment as failed
-    // if (req.body.txnid) await updatePaymentStatus(req.body.txnid, 'failed');
-
     // Redirect logic with more context
     const redirectUrl = eventId
-      ? `http://localhost:5173/event/${eventId}?payment=failed&reason=${encodeURIComponent(
+      ? `https://client-env-staging-sportomic.vercel.app/event/${eventId}?payment=failed&reason=${encodeURIComponent(
           req.body.error_Message || "payment_failed"
         )}`
-      : `http://localhost:5173/?payment=failed&reason=${encodeURIComponent(
+      : `https://client-env-staging-sportomic.vercel.app/?payment=failed&reason=${encodeURIComponent(
           req.body.error_Message || "payment_failed"
         )}`;
 
@@ -603,7 +597,7 @@ exports.handlePayuFailure = async (req, res) => {
       error.stack
     );
     return res.redirect(
-      "http://localhost:5173/?payment=failed&reason=handler_error"
+      "https://client-env-staging-sportomic.vercel.app/?payment=failed&reason=handler_error"
     );
   }
 };
