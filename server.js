@@ -21,16 +21,17 @@ app.use(cors());
 
 // Custom middleware for PayU webhook - must come BEFORE bodyParser
 app.post("/api/events/webhook/payu", (req, res, next) => {
-  let rawBody = "";
-  req.setEncoding("utf8");
+  let rawBody = [];
+  // req.setEncoding("utf8"); // REMOVE THIS LINE
 
   req.on("data", (chunk) => {
-    rawBody += chunk;
+    rawBody.push(chunk);
   });
 
   req.on("end", () => {
     try {
-      const params = new URLSearchParams(rawBody);
+      const bodyString = Buffer.concat(rawBody).toString("utf8");
+      const params = new URLSearchParams(bodyString);
       req.body = {};
       for (const [key, value] of params) {
         req.body[key] = value;
