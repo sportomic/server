@@ -7,7 +7,7 @@ const connectDB = require("./config/db");
 const fs = require("fs");
 const path = require("path");
 const getRawBody = require("raw-body");
-const Sentry = require("@sentry/node");
+// const Sentry = require("@sentry/node");
 
 // Create uploads directory if it doesn't exist
 const uploadsDir = path.join(__dirname, "Uploads");
@@ -24,17 +24,13 @@ const app = express();
 //Sentry.addIntegration(expressIntegration({ app }));
 
 // The request handler must be the first middleware on the app
-Sentry.setupExpressErrorHandler(app);
+// Sentry.setupExpressErrorHandler(app);
 // Middleware
 app.use(cors());
 
 // Custom middleware to skip bodyParser.json() for webhook routes
 app.use((req, res, next) => {
-  if (
-    req.method === "POST" &&
-    (req.url === "/api/events/webhook/razorpay" ||
-      req.url === "/api/events/webhook/payu")
-  ) {
+  if (req.method === "POST" && req.url === "/api/events/webhook/payu") {
     next();
   } else {
     bodyParser.json()(req, res, next);
@@ -56,11 +52,16 @@ app.use("/api/events/webhook/payu", (req, res, next) => {
       }
       req.rawBody = rawBody;
       try {
-        req.body = JSON.parse(rawBody);
+        // PayU sends data as form-urlencoded, not JSON
+        const params = new URLSearchParams(rawBody);
+        req.body = {};
+        for (const [key, value] of params) {
+          req.body[key] = value;
+        }
         next();
       } catch (parseErr) {
-        console.error("Error parsing raw body as JSON:", parseErr);
-        return res.status(400).json({ error: "Invalid JSON in request body" });
+        console.error("Error parsing webhook payload:", parseErr);
+        return res.status(400).json({ error: "Invalid payload format" });
       }
     }
   );
@@ -87,18 +88,18 @@ app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
-app.get("/debug-sentry", function mainHandler(req, res) {
-  throw new Error("My first Sentry error!");
-});
+// app.get("/debug-sentry", function mainHandler(req, res) {
+//   throw new Error("My first Sentry error!");
+// });
 
 // Error Handling Middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send({
-    error: "Something went wrong!",
-    sentryId: res.sentry,
-  });
-});
+// app.use((err, req, res, next) => {
+//   console.error(err.stack);
+//   res.status(500).send({
+//     error: "Something went wrong!",
+//     sentryId: res.sentry,
+//   });
+// });
 
 // Start the server
 app.listen(process.env.PORT || 5000, () => {
