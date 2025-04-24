@@ -20,7 +20,7 @@ const app = express();
 app.use(cors());
 
 // Custom middleware for PayU webhook - must come BEFORE bodyParser
-app.use("/api/events/webhook/payu", (req, res, next) => {
+app.get("/api/events/webhook/payu", (req, res, next) => {
   let rawBody = [];
   // req.setEncoding("utf8"); // REMOVE THIS LINE
 
