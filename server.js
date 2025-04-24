@@ -30,6 +30,10 @@ app.post("/api/events/webhook/payu", (req, res, next) => {
 
   req.on("end", () => {
     try {
+      console.log(req.url);
+      console.log(req.query);
+      console.log(req.body);
+      console.log(req.params);
       const bodyString = Buffer.concat(rawBody);
       // const bodyString = Buffer.concat(rawBody).toString("utf8");
       const params = new URLSearchParams(bodyString);
