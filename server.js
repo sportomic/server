@@ -16,42 +16,36 @@ dotenv.config();
 
 const app = express();
 
-// Middleware
+// Apply CORS globally
 app.use(cors());
 
-// Custom middleware to handle PayU webhook without body parsing
-app.use("/api/events/webhook/payu", (req, res, next) => {
-  if (req.method === "POST") {
-    let rawBody = "";
-    req.setEncoding("utf8");
+// Custom middleware for PayU webhook - must come BEFORE bodyParser
+app.post("/api/events/webhook/payu", (req, res, next) => {
+  let rawBody = "";
+  req.setEncoding("utf8");
 
-    req.on("data", (chunk) => {
-      rawBody += chunk;
-    });
+  req.on("data", (chunk) => {
+    rawBody += chunk;
+  });
 
-    req.on("end", () => {
-      try {
-        // Parse form-urlencoded data
-        req.rawBody = rawBody;
-        const params = new URLSearchParams(rawBody);
-        req.body = {};
-        for (const [key, value] of params) {
-          req.body[key] = value;
-        }
-        next();
-      } catch (parseErr) {
-        console.error("Error parsing webhook payload:", parseErr);
-        return res.status(400).json({ error: "Invalid payload format" });
+  req.on("end", () => {
+    try {
+      const params = new URLSearchParams(rawBody);
+      req.body = {};
+      for (const [key, value] of params) {
+        req.body[key] = value;
       }
-    });
+      next();
+    } catch (err) {
+      console.error("Error parsing webhook payload:", err);
+      return res.status(400).json({ error: "Invalid payload format" });
+    }
+  });
 
-    req.on("error", (err) => {
-      console.error("Error capturing raw body:", err);
-      res.status(500).json({ error: "Failed to process raw body" });
-    });
-  } else {
-    next();
-  }
+  req.on("error", (err) => {
+    console.error("Error capturing raw body:", err);
+    res.status(500).json({ error: "Failed to process raw body" });
+  });
 });
 
 // Apply body parsing for all other routes
@@ -82,8 +76,9 @@ app.use((err, req, res, next) => {
 });
 
 // Start the server
-app.listen(process.env.PORT || 5000, () => {
-  console.log(`Server running on http://localhost:${process.env.PORT || 5000}`);
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });
 
 module.exports = { app };
