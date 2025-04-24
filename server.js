@@ -6,7 +6,6 @@ const dotenv = require("dotenv");
 const connectDB = require("./config/db");
 const fs = require("fs");
 const path = require("path");
-const getRawBody = require("raw-body");
 
 const uploadsDir = path.join(__dirname, "Uploads");
 if (!fs.existsSync(uploadsDir)) {
@@ -20,44 +19,44 @@ const app = express();
 // Middleware
 app.use(cors());
 
-// Custom middleware to skip body parsing for webhook routes
-app.use((req, res, next) => {
-  if (req.method === "POST" && req.url === "/api/events/webhook/payu") {
-    // Skip all body parsing for PayU webhook
-    getRawBody(
-      req,
-      {
-        length: req.headers["content-length"],
-        encoding: "utf8",
-      },
-      (err, rawBody) => {
-        if (err) {
-          console.error("Error capturing raw body:", err);
-          return res.status(500).json({ error: "Failed to process raw body" });
-        }
+// Custom middleware to handle PayU webhook without body parsing
+app.use("/api/events/webhook/payu", (req, res, next) => {
+  if (req.method === "POST") {
+    let rawBody = "";
+    req.setEncoding("utf8");
+
+    req.on("data", (chunk) => {
+      rawBody += chunk;
+    });
+
+    req.on("end", () => {
+      try {
+        // Parse form-urlencoded data
         req.rawBody = rawBody;
-        try {
-          // Parse form-urlencoded data
-          const params = new URLSearchParams(rawBody);
-          req.body = {};
-          for (const [key, value] of params) {
-            req.body[key] = value;
-          }
-          next();
-        } catch (parseErr) {
-          console.error("Error parsing webhook payload:", parseErr);
-          return res.status(400).json({ error: "Invalid payload format" });
+        const params = new URLSearchParams(rawBody);
+        req.body = {};
+        for (const [key, value] of params) {
+          req.body[key] = value;
         }
+        next();
+      } catch (parseErr) {
+        console.error("Error parsing webhook payload:", parseErr);
+        return res.status(400).json({ error: "Invalid payload format" });
       }
-    );
+    });
+
+    req.on("error", (err) => {
+      console.error("Error capturing raw body:", err);
+      res.status(500).json({ error: "Failed to process raw body" });
+    });
   } else {
     next();
   }
 });
 
-// Apply body parsing for non-webhook routes
+// Apply body parsing for all other routes
 app.use(bodyParser.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // MongoDB Connection
 connectDB();
