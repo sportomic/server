@@ -547,9 +547,7 @@ exports.handlePayuSuccess = async (req, res) => {
     }
 
     // Redirect to the event page without query parameters
-    return res.redirect(
-      `https://client-env-staging-sportomic.vercel.app/event/${eventId}`
-    );
+    return res.redirect(`https://playverse.sportomic.com/event/${eventId}`);
   } catch (error) {
     console.error(
       "Unexpected error in PayU success handler:",
@@ -579,8 +577,8 @@ exports.handlePayuFailure = async (req, res) => {
 
     // Redirect to the event page without query parameters
     const redirectUrl = eventId
-      ? `https://client-env-staging-sportomic.vercel.app/event/${eventId}`
-      : `https://client-env-staging-sportomic.vercel.app/`;
+      ? `https://playverse.sportomic.com/event/${eventId}`
+      : `https://playverse.sportomic.com/`;
 
     return res.redirect(redirectUrl);
   } catch (error) {
@@ -590,9 +588,7 @@ exports.handlePayuFailure = async (req, res) => {
       "Stack:",
       error.stack
     );
-    return res.redirect(
-      "https://client-env-staging-sportomic.vercel.app/"
-    );
+    return res.redirect("https://playverse.sportomic.com/");
   }
 };
 

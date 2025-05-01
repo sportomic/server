@@ -2,8 +2,8 @@ const crypto = require("crypto");
 
 // PayU configuration
 const payuConfig = {
-  merchantKey: "cApKQ0",
-  merchantSalt: "s9QCUBnBP3BsBQdAuhEsF8b1TXSzJsQa",
+  merchantKey: process.env.PAYU_MERCHANT_KEY, //"cApKQ0",
+  merchantSalt: process.env.PAYU_MERCHANT_SALT, //"s9QCUBnBP3BsBQdAuhEsF8b1TXSzJsQa",
   baseUrl: process.env.PAYU_BASE_URL || "https://test.payu.in",
   successUrl:
     process.env.PAYU_SUCCESS_URL ||
