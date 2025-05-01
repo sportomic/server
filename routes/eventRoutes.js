@@ -13,7 +13,10 @@ const {
   deleteEvent,
   sendConfirmation,
   sendCancellation,
-  handleRazorpayWebhook,
+  //handleRazorpayWebhook,
+  handlePayuWebhook,
+  handlePayuSuccess,
+  handlePayuFailure,
 } = require("../controllers/eventController");
 const verifyAdmin = require("../middleware/verifyAdmin"); // Import the middleware
 const upload = require("../middleware/uploadFile");
@@ -28,9 +31,16 @@ router.get("/", getAllEvents);
 router.get("/:id", getEventById);
 router.get("/:id/successful-payments", getSuccessfulPayments);
 
-router.post("/webhook/razorpay", handleRazorpayWebhook);
-router.post("/:id/book", initiateBooking);
+// Razorpay routes
+// router.post("/webhook/razorpay", handleRazorpayWebhook);
+// router.post("/:id/book", initiateBooking);
 // router.post("/:id/confirm", confirmPayment);
+
+// PayU routes
+router.post("/:id/book", initiateBooking);
+router.post("/webhook/payu", handlePayuWebhook);
+router.post("/payu/success", handlePayuSuccess);
+router.post("/payu/failure", handlePayuFailure);
 
 router.post("/:id/send-confirmation", sendConfirmation);
 router.post("/:id/send-cancellation", sendCancellation);

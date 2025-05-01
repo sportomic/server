@@ -1,3 +1,4 @@
+require("./instrument");
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
@@ -5,61 +6,58 @@ const dotenv = require("dotenv");
 const connectDB = require("./config/db");
 const fs = require("fs");
 const path = require("path");
-const getRawBody = require("raw-body");
 
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, "uploads");
+const uploadsDir = path.join(__dirname, "Uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// Load environment variables
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-// Middleware
+// Apply CORS globally
 app.use(cors());
 
-// Custom middleware to skip bodyParser.json() for webhook route
-app.use((req, res, next) => {
-  if (req.method === "POST" && req.url === "/api/events/webhook/razorpay") {
-    // Skip to route-specific handler without parsing body
-    next();
-  } else {
-    // Apply bodyParser.json() for all other routes
-    bodyParser.json()(req, res, next);
-  }
-});
+// Custom middleware for PayU webhook - must come BEFORE bodyParser
+app.get("/api/events/webhook/payu", (req, res, next) => {
+  let rawBody = [];
+  // req.setEncoding("utf8"); // REMOVE THIS LINE
 
-// Route-specific middleware for webhook to capture raw body
-app.use("/api/events/webhook/razorpay", (req, res, next) => {
-  getRawBody(
-    req,
-    {
-      length: req.headers["content-length"],
-      encoding: "utf8",
-    },
-    (err, rawBody) => {
-      if (err) {
-        console.error("Error capturing raw body:", err);
-        return res.status(500).json({ error: "Failed to process raw body" });
+  req.on("data", (chunk) => {
+    rawBody.push(chunk);
+  });
+
+  req.on("end", () => {
+    try {
+      console.log("Original Url:- ", req.originalUrl);
+      console.log(req.url);
+      console.log(req.query);
+      console.log(req.body);
+      console.log(req.params);
+      const bodyString = Buffer.concat(rawBody);
+      // const bodyString = Buffer.concat(rawBody).toString("utf8");
+      const params = new URLSearchParams(bodyString);
+      req.body = {};
+      for (const [key, value] of params) {
+        req.body[key] = value;
       }
-      req.rawBody = rawBody;
-      try {
-        req.body = JSON.parse(rawBody); // Parse for downstream use
-        next();
-      } catch (parseErr) {
-        console.error("Error parsing raw body as JSON:", parseErr);
-        return res.status(400).json({ error: "Invalid JSON in request body" });
-      }
+      next();
+    } catch (err) {
+      console.error("Error parsing webhook payload:", err);
+      return res.status(400).json({ error: "Invalid payload format" });
     }
-  );
+  });
+
+  req.on("error", (err) => {
+    console.error("Error capturing raw body:", err);
+    res.status(500).json({ error: "Failed to process raw body" });
+  });
 });
 
-// Other middleware
-app.use(express.urlencoded({ extended: true }));
+// Apply body parsing for all other routes
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // MongoDB Connection
 connectDB();
@@ -69,23 +67,25 @@ const authRoutes = require("./routes/adminAuthRoutes");
 const eventRoutes = require("./routes/eventRoutes");
 const contactRoutes = require("./routes/contactRoutes");
 
-// API Endpoints
-app.use("/api/admin", authRoutes); // Authentication routes
-app.use("/api/events", eventRoutes); // Event-related routes
-app.use("/api/contact", contactRoutes); // Contact-related routes
+app.use("/api/admin", authRoutes);
+app.use("/api/events", eventRoutes);
+app.use("/api/contact", contactRoutes);
 
 // Default Route
-app.get("/", (req, res, next) => {
+app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
 // Error Handling Middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).send({ error: "Something went wrong!" });
+  res.status(500).json({ error: "Something went wrong!" });
 });
 
 // Start the server
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
+module.exports = { app };
