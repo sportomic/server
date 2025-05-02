@@ -410,8 +410,9 @@ exports.handlePayuWebhook = async (req, res) => {
         return res.status(404).json({ error: "Event not found" });
       }
 
+      // Modified: Look for participant with any status except success
       const participantIndex = event.participants.findIndex(
-        (p) => p.orderId === txnId && p.paymentStatus === "pending"
+        (p) => p.orderId === txnId && p.paymentStatus !== "success"
       );
 
       if (participantIndex === -1) {

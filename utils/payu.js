@@ -2,8 +2,8 @@ const crypto = require("crypto");
 
 // PayU configuration
 const payuConfig = {
-  merchantKey: process.env.PAYU_MERCHANT_KEY, //"cApKQ0",
-  merchantSalt: process.env.PAYU_MERCHANT_SALT, //"s9QCUBnBP3BsBQdAuhEsF8b1TXSzJsQa",
+  merchantKey: process.env.PAYU_MERCHANT_KEY,
+  merchantSalt: process.env.PAYU_MERCHANT_SALT,
   baseUrl: process.env.PAYU_BASE_URL || "https://test.payu.in",
   successUrl:
     process.env.PAYU_SUCCESS_URL ||
@@ -14,24 +14,24 @@ const payuConfig = {
 };
 
 // Log PayU configuration (including salt for debugging)
-console.log("PayU Configuration:", {
-  merchantKey: payuConfig.merchantKey,
-  merchantSalt: payuConfig.merchantSalt,
-  baseUrl: payuConfig.baseUrl,
-  successUrl: payuConfig.successUrl,
-  failureUrl: payuConfig.failureUrl,
-});
+// console.log("PayU Configuration:", {
+//   merchantKey: payuConfig.merchantKey,
+//   merchantSalt: payuConfig.merchantSalt,
+//   baseUrl: payuConfig.baseUrl,
+//   successUrl: payuConfig.successUrl,
+//   failureUrl: payuConfig.failureUrl,
+// });
 
 exports.createPayuPaymentRequest = async (
   amount,
   eventDetails,
   userDetails
 ) => {
-  console.log("Creating PayU payment request with inputs:", {
-    amount,
-    eventDetails,
-    userDetails,
-  });
+  // console.log("Creating PayU payment request with inputs:", {
+  //   amount,
+  //   eventDetails,
+  //   userDetails,
+  // });
 
   const txnId = `TXN_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
   console.log("Generated transaction ID:", txnId);
@@ -58,7 +58,7 @@ exports.createPayuPaymentRequest = async (
     furl: payuConfig.failureUrl,
     udf1: userDetails.skillLevel || "",
     udf2: userDetails.quantity.toString() || "",
-    udf3: eventDetails.eventId, //"undefined", // Temporarily set to "undefined" to match PayU's expectation
+    udf3: eventDetails.eventId,
     udf4: "",
     udf5: "",
   };
