@@ -14,8 +14,10 @@ const {
   processPayuWebhook,
   verifyPayuPayment,
 } = require("../utils/payu");
+const { getTodayEventsReport } = require("../corn/eventCorn");
 // Removed: const Sentry = require("@sentry/node");
 
+//Download Event Excel
 exports.downloadEventExcel = async (req, res) => {
   try {
     const events = await Event.find();
@@ -82,18 +84,42 @@ exports.downloadEventExcel = async (req, res) => {
   }
 };
 
+//Event Functions
+
+//Get All Events
 exports.getAllEvents = async (req, res) => {
   try {
-    const { sport } = req.query;
+    const { sport, page, limit } = req.query;
     let filter = {};
-
-    // Removed: Sentry.setContext("query", { sport: sport || "all" });
 
     if (sport && sport.toLowerCase() !== "all") {
       filter.sportsName = sport.toLowerCase();
     }
 
-    const events = await Event.find(filter);
+    // Get total count for pagination metadata
+    const totalEvents = await Event.countDocuments(filter);
+
+    // Create base query
+    let eventsQuery = Event.find(filter);
+
+    // Apply pagination only if both page and limit are provided
+    if (page && limit) {
+      const pageNum = parseInt(page);
+      const limitNum = parseInt(limit);
+
+      if (isNaN(pageNum) || isNaN(limitNum) || pageNum < 1 || limitNum < 1) {
+        return res.status(400).json({
+          error:
+            "Invalid pagination parameters. Page and limit must be positive numbers",
+        });
+      }
+
+      const skip = (pageNum - 1) * limitNum;
+      eventsQuery = eventsQuery.skip(skip).limit(limitNum);
+    }
+
+    // Execute query
+    const events = await eventsQuery;
     const allSports = await Event.distinct("sportsName");
 
     const eventsWithSlots = events.map((event) => ({
@@ -101,19 +127,34 @@ exports.getAllEvents = async (req, res) => {
       slotsLeft: event.participantsLimit - event.currentParticipants,
     }));
 
-    res.status(200).json({
-      total: events.length,
+    // Construct response with pagination metadata
+    const response = {
+      total: totalEvents,
       sport: sport || "all",
       availableSports: allSports,
       events: eventsWithSlots,
-    });
+    };
+
+    // Add pagination metadata if pagination was requested
+    if (page && limit) {
+      const totalPages = Math.ceil(totalEvents / parseInt(limit));
+      response.pagination = {
+        currentPage: parseInt(page),
+        totalPages,
+        limit: parseInt(limit),
+        hasNextPage: parseInt(page) < totalPages,
+        hasPrevPage: parseInt(page) > 1,
+      };
+    }
+
+    res.status(200).json(response);
   } catch (error) {
-    // Removed: Sentry.captureException(error);
     console.error("Error in getAllEvents:", error);
     res.status(500).json({ error: "Failed to fetch events" });
   }
 };
 
+//Get Event By ID
 exports.getEventById = async (req, res) => {
   const { id } = req.params;
   try {
@@ -126,6 +167,7 @@ exports.getEventById = async (req, res) => {
   }
 };
 
+//get successful payments
 exports.getSuccessfulPayments = async (req, res) => {
   const { id } = req.params;
 
@@ -166,6 +208,7 @@ exports.getSuccessfulPayments = async (req, res) => {
   }
 };
 
+//Create Event
 exports.createEvent = async (req, res) => {
   const {
     name,
@@ -216,6 +259,7 @@ exports.createEvent = async (req, res) => {
   }
 };
 
+//Edit Event by ID
 exports.editEvent = async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
@@ -230,6 +274,7 @@ exports.editEvent = async (req, res) => {
   }
 };
 
+//Delete Event by ID
 exports.deleteEvent = async (req, res) => {
   const { id } = req.params;
   try {
@@ -243,6 +288,92 @@ exports.deleteEvent = async (req, res) => {
   }
 };
 
+exports.getTodaysEventsByVenue = async (req, res) => {
+  try {
+    //get today's start and end date
+    const today = new Date();
+    const startOfDay = new Date(today.setHours(0, 0, 0, 0));
+    const endOfDay = new Date(today.setHours(23, 59, 59, 999));
+
+    //aggregate events by venue for today
+    const eventsByVenue = await Event.aggregate([
+      {
+        $match: {
+          date: {
+            $gte: startOfDay,
+            $lte: endOfDay,
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$venueName",
+          totalEvents: { $sum: 1 },
+          events: {
+            $push: {
+              _id: "$_id",
+              name: "$name",
+              time: "$slot",
+              sport: "$sportsName",
+              currentParticipants: "$currentParticipants",
+              participantsLimit: "$participantsLimit",
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          venue: "$_id",
+          totalEvents: 1,
+          events: 1,
+          _id: 0,
+        },
+      },
+    ]);
+
+    res.status(200).json({
+      date: today.toISOString().split("T")[0],
+      venues: eventsByVenue,
+    });
+  } catch (error) {
+    console.error("Error in getTodaysEventsByVenue:", error);
+    res.status(500).json({ error: "Failed to fetch today's events" });
+  }
+};
+
+exports.getEventReports = async (req, res) => {
+  try {
+    const report = await getTodayEventsReport();
+    if (!report) {
+      return res.status(500).json({ error: "Failed to generate report" });
+    }
+
+    /*
+      getTodayEventsReport function returns an object with the following structure:
+     
+      date: today.toISOString().split("T")[0],
+      totalVenuesChecked: VENUE_NAMES.length,
+      venuesWithNoEvents,
+      venuesWithEvents: eventsByVenue.map((venue) => ({
+        venueName: venue._id,
+        totalEvents: venue.totalEvents,
+      
+    
+    */
+
+    res.status(200).json({
+      date: report.date,
+      totalVenuesChecked: report.totalVenuesChecked,
+      venuesWithNoEvents: report.venuesWithNoEvents,
+      venuesWithEvents: report.venuesWithEvents,
+    });
+  } catch (error) {
+    console.error("Error in getEventReports:", error);
+    res.status(500).json({ error: "Failed to fetch event reports" });
+  }
+};
+
+//Payment Related Functions
 //payU paymnet logic
 exports.initiateBooking = async (req, res) => {
   const { id } = req.params;
@@ -380,7 +511,7 @@ exports.initiateBooking = async (req, res) => {
   }
 };
 
-// Replace Razorpay webhook handler with PayU webhook handler
+// Replaced Razorpay webhook handler with PayU webhook handler
 exports.handlePayuWebhook = async (req, res) => {
   try {
     console.log("PayU Webhook received:", JSON.stringify(req.body, null, 2));
@@ -497,6 +628,7 @@ exports.handlePayuWebhook = async (req, res) => {
   }
 };
 
+//PayU success and failure handlers
 exports.handlePayuSuccess = async (req, res) => {
   try {
     // Log the full response for debugging
@@ -664,6 +796,8 @@ const MSG91_AUTH_KEY = process.env.MSG91_AUTH_KEY;
 const MSG91_API_URL = process.env.MSG91_API_URL;
 const INTEGRATED_NUMBER = process.env.INTEGRATED_NUMBER;
 
+// Send confirmation and cancellation messages
+// to participants via WhatsApp using MSG91 API
 exports.sendConfirmation = async (req, res) => {
   const { id } = req.params;
 
