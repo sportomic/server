@@ -82,6 +82,10 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Something went wrong!" });
 });
 
+//Run the cron job to schedule events report
+const { scheduleEventsReport } = require("./corn/eventCorn");
+scheduleEventsReport();
+
 // Start the server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {

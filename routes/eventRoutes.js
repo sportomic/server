@@ -17,6 +17,8 @@ const {
   handlePayuWebhook,
   handlePayuSuccess,
   handlePayuFailure,
+  getTodaysEventsByVenue,
+  getEventReports,
 } = require("../controllers/eventController");
 const verifyAdmin = require("../middleware/verifyAdmin"); // Import the middleware
 const upload = require("../middleware/uploadFile");
@@ -44,5 +46,11 @@ router.post("/payu/failure", handlePayuFailure);
 
 router.post("/:id/send-confirmation", sendConfirmation);
 router.post("/:id/send-cancellation", sendCancellation);
+
+//today's event Routes
+router.get("/today/by-venue", getTodaysEventsByVenue);
+
+//event daily report
+router.get("/today/report", getEventReports);
 
 module.exports = router;
